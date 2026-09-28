@@ -59,27 +59,6 @@ async function initApp() {
     },
     onPeerStats: () => {
       ui?.updateMeshMetrics();
-    },
-    onMessage: (msg, signer) => {
-      // Remote telemetry messages from other nodes on #axona-track
-      if (msg && msg.deviceName && msg.deviceName !== deviceId.name) {
-        if (msg.type === 'heartbeat') {
-          appendLocalEvent({
-            category: 'remote',
-            title: `Remote Heartbeat: ${msg.deviceName}`,
-            detail: `${msg.platform?.os} · ${msg.mesh?.peerCount ?? '?'} peers · ${msg.lifecycleState}`,
-            payload: msg
-          });
-        } else if (msg.type === 'recovery') {
-          appendLocalEvent({
-            category: 'remote',
-            title: `Remote Recovery: ${msg.deviceName}`,
-            detail: `Sleep: ${Math.round((msg.sleepDurationMs || 0) / 1000)}s · Dispo: ${msg.recoveryDisposition}`,
-            payload: msg
-          });
-        }
-        ui?._renderEventList();
-      }
     }
   });
 

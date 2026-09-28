@@ -79,7 +79,6 @@ export class MeshClient {
       this.isConnected = true;
 
       this._wireTransportListeners();
-      this._subscribeTelemetry();
 
       this.onStatus('connected', `Meshed (${this.getPeerCount()} peers) · Node: ${this.nodeIdentity.id.slice(0, 8)}…`);
       return true;
@@ -235,24 +234,6 @@ export class MeshClient {
     return { root, backup, child, total: this.activeRoles.size };
   }
 
-  async _subscribeTelemetry() {
-    if (!this.peer) return;
-    try {
-      const topicDesc = { region: this.region, name: TELEMETRY_TOPIC };
-      await this.peer.sub(topicDesc, (env) => {
-        if (!env || env.deleted || !env.message) return;
-        try {
-          const parsed = JSON.parse(env.message);
-          this.onMessage(parsed, env.signer);
-        } catch {
-          // Non-JSON or raw payload
-        }
-      }, { since: 'latest' });
-      console.log(`[axona.track] Subscribed to topic "${TELEMETRY_TOPIC}" [region: ${this.region}]`);
-    } catch (err) {
-      console.warn('[axona.track] Failed to subscribe to telemetry topic:', err);
-    }
-  }
 
   /**
    * Publish telemetry payload to #axona-track
@@ -265,7 +246,7 @@ export class MeshClient {
       const envelope = {
         v: 1,
         handle: payload?.deviceName || handle,
-        authorClass: 'stream',
+        authorClass: 'instrument',
         text: JSON.stringify(payload, null, 2),
         data: payload
       };
