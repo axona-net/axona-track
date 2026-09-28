@@ -292,7 +292,7 @@ export class TelemetryService {
     appendLocalEvent({
       category: 'lifecycle',
       title: `State Transition: ${oldState} ➔ ${newState}`,
-      detail: detail?.reason ? `Reason: ${detail.reason}` : '',
+      detail: detail?.reason ? `Trigger: ${detail.reason} (Now ${newState})` : `Now ${newState}`,
       payload
     });
 
@@ -301,7 +301,7 @@ export class TelemetryService {
     // If entering hidden, frozen, or offline, queue to offline outbox
     if (newState === 'HIDDEN' || newState === 'FROZEN' || newState === 'OFFLINE') {
       queueOfflineEvent(payload);
-    } else if (newState === 'ACTIVE' && this.mesh.isConnected) {
+    } else if ((newState === 'ACTIVE' || newState === 'PASSIVE') && this.mesh.isConnected) {
       this.mesh.publishTelemetry(payload);
     }
   }

@@ -494,9 +494,9 @@ export class TrackUI {
     if (dot) dot.className = `status-dot ${state.toLowerCase()}`;
 
     let desc = 'Operational';
-    if (state === 'ACTIVE') desc = 'Foreground active · full fidelity';
-    else if (state === 'PASSIVE') desc = 'Visible but unfocused';
-    else if (state === 'HIDDEN') desc = 'Tab hidden · pre-freeze snapshot preserved';
+    if (state === 'ACTIVE') desc = 'Foreground active & focused · full fidelity';
+    else if (state === 'PASSIVE') desc = 'Visible but unfocused (another window active) · click to focus';
+    else if (state === 'HIDDEN') desc = 'Tab hidden / minimized · pre-freeze snapshot preserved';
     else if (state === 'FROZEN') desc = 'OS execution suspended · zero CPU';
     else if (state === 'RESUMED') desc = `Post-wake recovery · sleep: ${Math.round((detail?.sleepDurationMs || 0) / 1000)}s`;
     else if (state === 'OFFLINE') desc = 'Network interface disconnected';

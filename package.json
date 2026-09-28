@@ -1,6 +1,6 @@
 {
   "name": "axona-track",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Mobile PWA Network Behavior & Role Telemetry App for Axona",
   "private": true,
   "type": "module",
