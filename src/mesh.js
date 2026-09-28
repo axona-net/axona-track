@@ -293,6 +293,7 @@ export class MeshClient {
     return {
       peerCount: this.getPeerCount(),
       webrtcPeersCount: this.peers.size,
+      peerIds: Array.from(this.peers.keys()),
       bridgeConnected: this.isConnected,
       medianRtt: this.getMedianRtt(),
       roles: Array.from(this.activeRoles.entries()).map(([topic, r]) => ({ topic, ...r })),
@@ -301,30 +302,52 @@ export class MeshClient {
   }
 
   /**
-   * Reconnect after waking from background
+   * Reconnect after waking from background with passive pre-audit and measured latency
    */
-  async recoverFromBackground(sleepDurationMs) {
+  async recoverFromBackground(sleepDurationMs, preFreezeSnapshot = null) {
     console.log(`[axona.track] Executing post-wake recovery (sleep: ${sleepDurationMs}ms)...`);
 
-    // 1. Force transport reconnect
-    if (this.transport && typeof this.transport.reconnectNow === 'function') {
+    // 1. Passive pre-intervention observation
+    const prePeerIds = new Set(preFreezeSnapshot?.meshSnapshot?.peerIds || preFreezeSnapshot?.peerIds || []);
+    const immediateBridgeOpen = this.isConnected;
+    const immediatePeers = Array.from(this.peers.keys());
+    const survivingPeerIds = immediatePeers.filter((id) => prePeerIds.has(id));
+    const sameSocketsObserved = (survivingPeerIds.length > 0);
+
+    // 2. Measure actual reconnect latency
+    const t0 = performance.now();
+    if (!this.isConnected && this.transport && typeof this.transport.reconnectNow === 'function') {
       this.transport.reconnectNow();
     }
 
-    // 2. Audit surviving peers
-    const survivingPeers = this.peers.size;
-    const rolesBefore = this.activeRoles.size;
+    // Wait until bridge re-establishes or up to 3000ms deadline
+    const deadline = Date.now() + 3000;
+    while (!this.isConnected && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const measuredReconnectLatencyMs = Math.round(performance.now() - t0);
 
-    // 3. Wait for reconnect settling
-    await new Promise((r) => setTimeout(r, 1200));
+    // Allow mesh brief settling window
+    await new Promise((r) => setTimeout(r, 500));
+
+    const settledPeersCount = this.peers.size;
+    const prePeersCount = prePeerIds.size;
+    const peersLostCount = Math.max(0, prePeersCount - survivingPeerIds.length);
 
     return {
-      socketsSurvived: survivingPeers > 0 && this.isConnected,
-      peersBeforeSleep: survivingPeers,
-      peersLostCount: survivingPeers === 0 ? 1 : 0,
-      rolesBeforeSleep: rolesBefore,
-      rolesAfterWake: this.activeRoles.size,
-      reconnectLatencyMs: 1200
+      passiveAudit: {
+        bridgeOpenAtWake: immediateBridgeOpen,
+        immediatePeersCount: immediatePeers.length,
+        survivingPeerIds,
+        continuityState: sameSocketsObserved ? 'observed_identical_ids' : 'sockets_severed_or_unknown'
+      },
+      reconnectLatencyMs: measuredReconnectLatencyMs,
+      settledBridgeConnected: this.isConnected,
+      settledPeersCount,
+      prePeersCount,
+      peersLostCount,
+      rolesBeforeSleep: preFreezeSnapshot?.meshSnapshot?.roles?.length ?? (preFreezeSnapshot?.roles?.length || 0),
+      rolesAfterWake: this.activeRoles.size
     };
   }
 }
