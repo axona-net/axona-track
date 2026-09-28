@@ -1,6 +1,7 @@
 // src/ui.js — UI renderer and state binding for axona.track
 
 import { getLocalEvents, clearLocalEvents, getSessionMetrics } from './storage.js';
+import { APP_VERSION, KERNEL_VERSION } from './version.js';
 
 export class TrackUI {
   constructor({ container, deviceId, platform, mesh, lifecycle, telemetry }) {
@@ -34,7 +35,7 @@ export class TrackUI {
                 </svg>
               </div>
               <h1 class="brand-title">axona.track</h1>
-              <span class="brand-version" id="versionBadge">v4.99.0</span>
+              <span class="brand-version" id="versionBadge">v${APP_VERSION} · kernel v${KERNEL_VERSION}</span>
             </div>
 
             <div class="header-badges">

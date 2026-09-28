@@ -13,6 +13,7 @@ import {
   withFlushLock,
   withStorageTransaction
 } from './storage.js';
+import { APP_VERSION, KERNEL_VERSION } from './version.js';
 
 export class TelemetryService {
   constructor({ mesh, lifecycle, deviceId, onTelemetryEvent }) {
@@ -48,6 +49,8 @@ export class TelemetryService {
 
     const payload = {
       v: 1,
+      appVersion: APP_VERSION,
+      kernelVersion: KERNEL_VERSION,
       type: 'heartbeat_anchor',
       trigger,
       deviceName: this.deviceId.name,
@@ -160,6 +163,8 @@ export class TelemetryService {
 
       const payload = {
         v: 1,
+        appVersion: APP_VERSION,
+        kernelVersion: KERNEL_VERSION,
         type: 'peer_connected',
         deviceName: this.deviceId.name,
         peerNodeId: peer.id,
@@ -200,6 +205,8 @@ export class TelemetryService {
 
       const payload = {
         v: 1,
+        appVersion: APP_VERSION,
+        kernelVersion: KERNEL_VERSION,
         type: 'peer_disconnected',
         deviceName: this.deviceId.name,
         peerNodeId: loss.id,
@@ -233,6 +240,8 @@ export class TelemetryService {
   _handleConnectivityWarning(warnDetail) {
     const payload = {
       v: 1,
+      appVersion: APP_VERSION,
+      kernelVersion: KERNEL_VERSION,
       type: 'connectivity_warning',
       deviceName: this.deviceId.name,
       reason: warnDetail.reason,
@@ -262,6 +271,8 @@ export class TelemetryService {
     const roles = Array.from(this.mesh.activeRoles.keys());
     const payload = {
       v: 1,
+      appVersion: APP_VERSION,
+      kernelVersion: KERNEL_VERSION,
       type: 'lifecycle_transition',
       deviceName: this.deviceId.name,
       previousState: oldState.toLowerCase(),
@@ -317,6 +328,8 @@ export class TelemetryService {
 
         const payload = {
           v: 1,
+          appVersion: APP_VERSION,
+          kernelVersion: KERNEL_VERSION,
           type: 'recovery_journal_flush',
           deviceName: this.deviceId.name,
           flushState: 'attempted',
