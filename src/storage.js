@@ -45,15 +45,19 @@ function getStorage() {
 }
 
 function readRawArray(key) {
+  const storage = getStorage();
+  const raw = storage.getItem(key);
+  if (raw === null || raw === undefined || raw === '') return [];
   try {
-    const raw = getStorage().getItem(key);
-    if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) {
+      console.warn(`[axona.track] Storage key ${key} contained non-array data; resetting`);
+      return [];
+    }
+    return parsed;
   } catch (err) {
-    // Return empty on JSON/missing, but throw if storage is fundamentally broken
-    if (typeof localStorage === 'undefined') throw err;
-    return [];
+    console.error(`[axona.track] Corrupted JSON in storage key ${key}:`, err);
+    throw new Error(`Storage corruption: invalid JSON in ${key}`);
   }
 }
 
@@ -315,18 +319,14 @@ export async function queueOfflineEvent(event) {
  * Get all queued offline events, filtered by 24h max age with persisted prune
  */
 export function getOfflineOutbox() {
-  try {
-    const now = Date.now();
-    const raw = readRawArray(OUTBOX_KEY);
-    const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
-    if (fresh.length !== raw.length) {
-      getStorage().setItem(OUTBOX_KEY, JSON.stringify(fresh));
-      recordStorageDrops(raw.length - fresh.length);
-    }
-    return fresh;
-  } catch {
-    return [];
+  const now = Date.now();
+  const raw = readRawArray(OUTBOX_KEY);
+  const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+  if (fresh.length !== raw.length) {
+    getStorage().setItem(OUTBOX_KEY, JSON.stringify(fresh));
+    recordStorageDrops(raw.length - fresh.length);
   }
+  return fresh;
 }
 
 /**
@@ -435,18 +435,14 @@ export async function appendLocalEvent(event) {
  * Retrieve local event log filtered by 24h age limit with persisted cleanup
  */
 export function getLocalEvents() {
-  try {
-    const now = Date.now();
-    const raw = readRawArray(EVENTS_KEY);
-    const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
-    if (fresh.length !== raw.length) {
-      getStorage().setItem(EVENTS_KEY, JSON.stringify(fresh));
-      recordStorageDrops(raw.length - fresh.length);
-    }
-    return fresh;
-  } catch {
-    return [];
+  const now = Date.now();
+  const raw = readRawArray(EVENTS_KEY);
+  const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+  if (fresh.length !== raw.length) {
+    getStorage().setItem(EVENTS_KEY, JSON.stringify(fresh));
+    recordStorageDrops(raw.length - fresh.length);
   }
+  return fresh;
 }
 
 /**

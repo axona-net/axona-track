@@ -156,7 +156,7 @@ await test('Slow operation maintains active exclusive lock so peer cannot steal 
   assert.strictEqual(holderDone, true, 'Slow task finished cleanly');
 });
 
-// TEST 5: Storage Exceptions (Fail-Closed on QuotaExceededError)
+// TEST 5: Storage Exceptions & Corruption (Fail-Closed)
 await test('Storage exceptions fail closed without false success or corrupted counters', async () => {
   globalThis.localStorage.shouldThrowOnSet = true;
 
@@ -168,10 +168,23 @@ await test('Storage exceptions fail closed without false success or corrupted co
     assert.ok(err.message.includes('QuotaExceededError'));
   }
 
+  assert.strictEqual(threw, true, 'Storage exception must be propagated (fail-closed)');
+
   // Restore storage
   globalThis.localStorage.shouldThrowOnSet = false;
   const outbox = storage.getOfflineOutbox();
   assert.strictEqual(outbox.length, 0, 'No partial or corrupted entries written');
+
+  // Verify corrupted JSON throws rather than masking as empty
+  globalThis.localStorage.setItem('axona.track.offline_outbox', '{invalid_json');
+  let corruptThrew = false;
+  try {
+    storage.getOfflineOutbox();
+  } catch (err) {
+    corruptThrew = true;
+    assert.ok(err.message.includes('Storage corruption'));
+  }
+  assert.strictEqual(corruptThrew, true, 'Corrupted storage throws instead of returning empty');
 });
 
 // TEST 6: Holder Termination / Error Abort (Lock cleanly released, no deadlock)

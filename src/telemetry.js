@@ -48,6 +48,7 @@ export class TelemetryService {
     const roleCounts = this.mesh.getRoleCounts();
 
     const payload = {
+      note: `30m Anchor Heartbeat: ${snapshot.peerCount} peers direct · uptime ${Math.round(uptimeSec / 60)}m`,
       v: 1,
       appVersion: APP_VERSION,
       kernelVersion: KERNEL_VERSION,
@@ -122,6 +123,7 @@ export class TelemetryService {
       }));
 
       const eventRecord = {
+        note: `Pre-freeze Snapshot Saved: ${snapshot.peerCount} peers, ${snapshot.roles.length} roles held (trigger: ${freezeDetail.trigger})`,
         type: 'state_transition',
         event: 'pre_freeze_snapshot',
         trigger: freezeDetail.trigger,
@@ -162,6 +164,7 @@ export class TelemetryService {
       }));
 
       const payload = {
+        note: `Peer Connected: ${peer.id.slice(0, 8)}… via ${peer.candidateType || 'webrtc'} (total ${this.mesh.getPeerCount()} peers)`,
         v: 1,
         appVersion: APP_VERSION,
         kernelVersion: KERNEL_VERSION,
@@ -204,6 +207,7 @@ export class TelemetryService {
       }));
 
       const payload = {
+        note: `Peer Dropped: ${loss.id.slice(0, 8)}… after ${Math.round(loss.durationMs / 1000)}s (${loss.reason})`,
         v: 1,
         appVersion: APP_VERSION,
         kernelVersion: KERNEL_VERSION,
@@ -239,6 +243,7 @@ export class TelemetryService {
 
   _handleConnectivityWarning(warnDetail) {
     const payload = {
+      note: `Connectivity Warning: ${warnDetail.reason} (${this.mesh.getPeerCount()} peers, state ${this.lifecycle.state})`,
       v: 1,
       appVersion: APP_VERSION,
       kernelVersion: KERNEL_VERSION,
@@ -270,6 +275,7 @@ export class TelemetryService {
   async _handleLifecycleTransition(newState, oldState, detail) {
     const roles = Array.from(this.mesh.activeRoles.keys());
     const payload = {
+      note: `State Transition: ${oldState} ➔ ${newState}${detail?.reason ? ` (${detail.reason})` : ''}`,
       v: 1,
       appVersion: APP_VERSION,
       kernelVersion: KERNEL_VERSION,
@@ -327,6 +333,7 @@ export class TelemetryService {
         const heldIds = heldEvents.map((e) => e.id);
 
         const payload = {
+          note: `Wake Recovery: Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Attempting flush of ${heldEvents.length} held events.`,
           v: 1,
           appVersion: APP_VERSION,
           kernelVersion: KERNEL_VERSION,

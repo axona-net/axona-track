@@ -243,12 +243,16 @@ export class MeshClient {
     if (!this.peer || !this.author) return false;
     try {
       const topicDesc = { region: this.region, name: TELEMETRY_TOPIC };
+      const note = payload?.note || payload?.summary || `[${payload?.type || 'telemetry'}] ${payload?.deviceName || handle}`;
       const envelope = {
         v: 1,
         handle: payload?.deviceName || handle,
         authorClass: 'instrument',
-        text: payload?.summary || `[${payload?.type || 'telemetry'}] ${payload?.deviceName || handle}`,
-        data: payload
+        text: note,
+        data: {
+          note,
+          ...payload
+        }
       };
       await this.peer.pub(topicDesc, envelope, { signWith: this.author });
       return true;
