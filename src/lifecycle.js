@@ -11,11 +11,12 @@
  */
 
 export class LifecycleMonitor {
-  constructor({ onStateChange, onPreFreeze, onResume, onOnlineChange }) {
+  constructor({ onStateChange, onPreFreeze, onResume, onOnlineChange, onConnectivityWarning }) {
     this.onStateChange = onStateChange || (() => {});
     this.onPreFreeze   = onPreFreeze || (() => {});
     this.onResume      = onResume || (() => {});
     this.onOnlineChange = onOnlineChange || (() => {});
+    this.onConnectivityWarning = onConnectivityWarning || (() => {});
 
     this.state = this._determineInitialState();
     this.lastActiveTime = Date.now();
@@ -103,10 +104,29 @@ export class LifecycleMonitor {
         this._setState('PASSIVE', { reason: 'blur' });
       }
     });
+
+    // 7. Network quality degradation listener
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn && typeof conn.addEventListener === 'function') {
+      conn.addEventListener('change', () => {
+        if (conn.effectiveType === '2g' || conn.effectiveType === 'slow-2g' || (conn.rtt && conn.rtt > 800)) {
+          this.onConnectivityWarning({
+            reason: 'network_link_degraded',
+            effectiveType: conn.effectiveType,
+            rtt: conn.rtt,
+            downlink: conn.downlink
+          });
+        }
+      });
+    }
   }
 
   _handleHidden() {
     this.freezeTimestamp = Date.now();
+    this.onConnectivityWarning({
+      reason: 'tab_hidden_imminent_freeze',
+      stateBefore: this.state
+    });
     this.onPreFreeze({
       trigger: 'visibility_hidden',
       stateBefore: this.state,

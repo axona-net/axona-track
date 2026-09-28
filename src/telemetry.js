@@ -1,7 +1,15 @@
-// src/telemetry.js — Telemetry orchestrator for heartbeats, lifecycle transitions, and churn events
+// src/telemetry.js — Telemetry orchestrator for state transitions, offline event holding, and recovery flush
 
 import { detectPlatform, getLiveEnvironmentStats } from './id.js';
-import { appendLocalEvent, updateSessionMetrics, savePreFreezeSnapshot, popPreFreezeSnapshot } from './storage.js';
+import { 
+  appendLocalEvent, 
+  updateSessionMetrics, 
+  savePreFreezeSnapshot, 
+  popPreFreezeSnapshot,
+  queueOfflineEvent,
+  getOfflineOutbox,
+  clearOfflineOutbox
+} from './storage.js';
 
 export class TelemetryService {
   constructor({ mesh, lifecycle, deviceId, onTelemetryEvent }) {
@@ -12,7 +20,7 @@ export class TelemetryService {
 
     this.startTime = Date.now();
     this.heartbeatInterval = null;
-    this.HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000; // 30-minute periodic heartbeat (per David directive)
+    this.HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000; // 30-minute anchor heartbeat per David directive
 
     this._bindLifecycleHooks();
     this._bindMeshHooks();
@@ -22,13 +30,13 @@ export class TelemetryService {
   startHeartbeatLoop() {
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.heartbeatInterval = setInterval(() => {
-      // Don't send periodic heartbeats if offline or frozen
-      if (this.lifecycle.state === 'FROZEN' || this.lifecycle.state === 'OFFLINE') return;
+      // Only emit periodic heartbeat if tab is fully active/visible and meshed
+      if (this.lifecycle.state !== 'ACTIVE' || !this.mesh.isConnected) return;
       this.sendHeartbeat();
     }, this.HEARTBEAT_INTERVAL_MS);
   }
 
-  async sendHeartbeat(trigger = 'periodic') {
+  async sendHeartbeat(trigger = 'periodic_30m') {
     const platform = detectPlatform();
     const envStats = await getLiveEnvironmentStats();
     const uptimeSec = Math.floor((Date.now() - this.startTime) / 1000);
@@ -36,8 +44,8 @@ export class TelemetryService {
     const roleCounts = this.mesh.getRoleCounts();
 
     const payload = {
-      type: 'heartbeat',
       v: 1,
+      type: 'heartbeat_anchor',
       trigger,
       deviceName: this.deviceId.name,
       platform: {
@@ -54,11 +62,7 @@ export class TelemetryService {
         webrtcPeers: snapshot.webrtcPeersCount,
         websocketBridge: snapshot.bridgeConnected,
         medianRttMs: snapshot.medianRtt,
-        roles: {
-          root: roleCounts.root,
-          backup: roleCounts.backup,
-          child: roleCounts.child
-        }
+        roles: roleCounts
       },
       uptimeSec,
       ts: Date.now()
@@ -71,7 +75,7 @@ export class TelemetryService {
 
     appendLocalEvent({
       category: 'heartbeat',
-      title: `Heartbeat (${trigger})`,
+      title: `30m Anchor Heartbeat`,
       detail: `${snapshot.peerCount} peers · ${snapshot.medianRtt ? snapshot.medianRtt + 'ms RTT' : 'direct'}`,
       payload
     });
@@ -82,14 +86,21 @@ export class TelemetryService {
   }
 
   _bindLifecycleHooks() {
-    // 1. On State Change
+    // 1. Connectivity Warning (e.g. tab hidden imminent freeze, or network RTT degradation)
+    const origWarning = this.lifecycle.onConnectivityWarning;
+    this.lifecycle.onConnectivityWarning = (warnDetail) => {
+      origWarning?.(warnDetail);
+      this._handleConnectivityWarning(warnDetail);
+    };
+
+    // 2. On State Change (ACTIVE -> HIDDEN -> FROZEN -> RESUMED -> OFFLINE)
     const origStateChange = this.lifecycle.onStateChange;
     this.lifecycle.onStateChange = (newState, oldState, detail) => {
       origStateChange?.(newState, oldState, detail);
       this._handleLifecycleTransition(newState, oldState, detail);
     };
 
-    // 2. Pre-freeze snapshot
+    // 3. Pre-freeze snapshot (called upon hidden or freeze)
     const origPreFreeze = this.lifecycle.onPreFreeze;
     this.lifecycle.onPreFreeze = (freezeDetail) => {
       origPreFreeze?.(freezeDetail);
@@ -104,19 +115,32 @@ export class TelemetryService {
         suspensionsCount: (m.suspensionsCount || 0) + 1
       }));
 
+      const eventRecord = {
+        type: 'state_transition',
+        event: 'pre_freeze_snapshot',
+        trigger: freezeDetail.trigger,
+        stateBefore: freezeDetail.stateBefore,
+        peersHeld: snapshot.peerCount,
+        rolesHeld: snapshot.roles.length,
+        ts: Date.now()
+      };
+
       appendLocalEvent({
         category: 'lifecycle',
         title: `Pre-freeze Snapshot Saved`,
-        detail: `Trigger: ${freezeDetail.trigger} · State: ${freezeDetail.stateBefore}`,
-        payload: { freezeDetail, meshSnapshot: snapshot }
+        detail: `Trigger: ${freezeDetail.trigger} · Peers: ${snapshot.peerCount} · Roles: ${snapshot.roles.length}`,
+        payload: eventRecord
       });
+
+      // Hold in offline outbox while hidden/frozen
+      queueOfflineEvent(eventRecord);
     };
 
-    // 3. Resume from background
+    // 4. Resume & Recovery from background
     const origResume = this.lifecycle.onResume;
     this.lifecycle.onResume = async (resumeDetail) => {
       origResume?.(resumeDetail);
-      await this._handleResumeAndRecovery(resumeDetail);
+      await this._handleResumeAndFlush(resumeDetail);
     };
   }
 
@@ -132,27 +156,33 @@ export class TelemetryService {
       }));
 
       const payload = {
-        type: 'peer_churn',
         v: 1,
+        type: 'peer_connected',
         deviceName: this.deviceId.name,
-        action: 'connected',
         peerNodeId: peer.id,
         transportKind: 'webrtc',
         candidateType: peer.candidateType,
         rttMs: peer.rtt,
         totalPeersNow: this.mesh.getPeerCount(),
+        lifecycleState: this.lifecycle.state.toLowerCase(),
         ts: Date.now()
       };
 
       appendLocalEvent({
         category: 'churn',
-        title: `Peer Joined: ${peer.id.slice(0, 8)}…`,
+        title: `Peer Connected: ${peer.id.slice(0, 8)}…`,
         detail: `Type: ${peer.candidateType} · RTT: ${peer.rtt != null ? peer.rtt + 'ms' : 'probing'}`,
         payload
       });
 
       this.onTelemetryEvent('peer_churn', payload);
-      this.mesh.publishTelemetry(payload);
+
+      // If tab is hidden or offline, queue to outbox; otherwise publish live
+      if (this.lifecycle.state === 'HIDDEN' || this.lifecycle.state === 'FROZEN' || !this.mesh.isConnected) {
+        queueOfflineEvent(payload);
+      } else {
+        this.mesh.publishTelemetry(payload);
+      }
     };
 
     // Peer lost
@@ -166,61 +196,101 @@ export class TelemetryService {
       }));
 
       const payload = {
-        type: 'peer_churn',
         v: 1,
+        type: 'peer_disconnected',
         deviceName: this.deviceId.name,
-        action: 'disconnected',
         peerNodeId: loss.id,
         transportKind: 'webrtc',
         durationMs: loss.durationMs,
         lastRttMs: loss.lastRtt,
         reason: loss.reason,
         totalPeersNow: this.mesh.getPeerCount(),
+        lifecycleState: this.lifecycle.state.toLowerCase(),
         ts: Date.now()
       };
 
       appendLocalEvent({
         category: 'churn',
-        title: `Peer Left: ${loss.id.slice(0, 8)}…`,
+        title: `Peer Dropped: ${loss.id.slice(0, 8)}…`,
         detail: `Duration: ${Math.round(loss.durationMs / 1000)}s · Reason: ${loss.reason}`,
         payload
       });
 
       this.onTelemetryEvent('peer_churn', payload);
-      this.mesh.publishTelemetry(payload);
+
+      // If tab is hidden or offline, queue to outbox; otherwise publish live
+      if (this.lifecycle.state === 'HIDDEN' || this.lifecycle.state === 'FROZEN' || !this.mesh.isConnected) {
+        queueOfflineEvent(payload);
+      } else {
+        this.mesh.publishTelemetry(payload);
+      }
     };
+  }
+
+  _handleConnectivityWarning(warnDetail) {
+    const payload = {
+      v: 1,
+      type: 'connectivity_warning',
+      deviceName: this.deviceId.name,
+      reason: warnDetail.reason,
+      details: warnDetail,
+      lifecycleState: this.lifecycle.state.toLowerCase(),
+      peerCount: this.mesh.getPeerCount(),
+      ts: Date.now()
+    };
+
+    appendLocalEvent({
+      category: 'lifecycle',
+      title: `Connectivity Warning: ${warnDetail.reason}`,
+      detail: `Peers: ${this.mesh.getPeerCount()} · State: ${this.lifecycle.state}`,
+      payload
+    });
+
+    this.onTelemetryEvent('lifecycle', payload);
+
+    if (this.lifecycle.state === 'HIDDEN' || this.lifecycle.state === 'FROZEN' || !this.mesh.isConnected) {
+      queueOfflineEvent(payload);
+    } else {
+      this.mesh.publishTelemetry(payload);
+    }
   }
 
   async _handleLifecycleTransition(newState, oldState, detail) {
     const roles = Array.from(this.mesh.activeRoles.keys());
     const payload = {
-      type: 'lifecycle',
       v: 1,
+      type: 'lifecycle_transition',
       deviceName: this.deviceId.name,
-      event: detail?.reason || detail?.trigger || `transition_${newState.toLowerCase()}`,
       previousState: oldState.toLowerCase(),
       newState: newState.toLowerCase(),
-      activeRoles: roles,
+      reason: detail?.reason || detail?.trigger || 'transition',
+      activeRolesCount: roles.length,
       peerCountAtTransition: this.mesh.getPeerCount(),
       ts: Date.now()
     };
 
     appendLocalEvent({
       category: 'lifecycle',
-      title: `State: ${oldState} ➔ ${newState}`,
+      title: `State Transition: ${oldState} ➔ ${newState}`,
       detail: detail?.reason ? `Reason: ${detail.reason}` : '',
       payload
     });
 
     this.onTelemetryEvent('lifecycle', payload);
-    await this.mesh.publishTelemetry(payload);
+
+    // If entering hidden, frozen, or offline, queue to offline outbox
+    if (newState === 'HIDDEN' || newState === 'FROZEN' || newState === 'OFFLINE') {
+      queueOfflineEvent(payload);
+    } else if (newState === 'ACTIVE' && this.mesh.isConnected) {
+      this.mesh.publishTelemetry(payload);
+    }
   }
 
-  async _handleResumeAndRecovery(resumeDetail) {
+  async _handleResumeAndFlush(resumeDetail) {
     const preSnapshot = popPreFreezeSnapshot();
     const sleepDurationMs = resumeDetail.sleepDurationMs || 0;
 
-    // Trigger mesh reconnect and recovery probe
+    // 1. Trigger mesh reconnect and recovery probe
     const recoveryResult = await this.mesh.recoverFromBackground(sleepDurationMs);
 
     const rolesBefore = preSnapshot?.meshSnapshot?.roles?.length ?? (recoveryResult.rolesBeforeSleep || 0);
@@ -233,38 +303,48 @@ export class TelemetryService {
       recoveriesCount: (m.recoveriesCount || 0) + 1
     }));
 
+    // 2. Collect all held offline events
+    const heldEvents = getOfflineOutbox();
+    clearOfflineOutbox();
+
     const payload = {
-      type: 'recovery',
       v: 1,
+      type: 'recovery_journal_flush',
       deviceName: this.deviceId.name,
-      sleepDurationMs,
-      socketsSurvived: recoveryResult.socketsSurvived,
-      peersBeforeSleep: peersBefore,
-      peersLostCount,
-      rolesBeforeSleep: rolesBefore,
-      rolesAfterWake: this.mesh.activeRoles.size,
-      reconnectLatencyMs: recoveryResult.reconnectLatencyMs,
-      recoveryDisposition: recoveryResult.socketsSurvived
-        ? 'sockets_survived_sleep'
-        : 'sockets_severed_reconnected_clean',
-      trigger: resumeDetail.trigger,
+      summary: `Tab restored after ${Math.round(sleepDurationMs / 1000)}s sleep. Flushed ${heldEvents.length} held events.`,
+      recovery: {
+        sleepDurationMs,
+        socketsSurvived: recoveryResult.socketsSurvived,
+        peersBeforeSleep: peersBefore,
+        peersAfterWake: currentPeers,
+        peersLostCount,
+        rolesBeforeSleep: rolesBefore,
+        rolesAfterWake: this.mesh.activeRoles.size,
+        reconnectLatencyMs: recoveryResult.reconnectLatencyMs,
+        disposition: recoveryResult.socketsSurvived
+          ? 'sockets_survived_sleep'
+          : 'sockets_severed_reconnected_clean',
+        trigger: resumeDetail.trigger
+      },
+      heldOfflineEventsCount: heldEvents.length,
+      heldOfflineEvents: heldEvents,
       ts: Date.now()
     };
 
     appendLocalEvent({
       category: 'recovery',
-      title: `Recovered from Background (${Math.round(sleepDurationMs / 1000)}s sleep)`,
-      detail: `Disposition: ${payload.recoveryDisposition} · Sockets survived: ${payload.socketsSurvived}`,
+      title: `Wake Recovery & Offline Journal Flush (${Math.round(sleepDurationMs / 1000)}s sleep)`,
+      detail: `Disposition: ${payload.recovery.disposition} · Held Events: ${heldEvents.length}`,
       payload
     });
 
     this.onTelemetryEvent('recovery', payload);
-    await this.mesh.publishTelemetry(payload);
 
-    // Follow up with an immediate fresh heartbeat to re-anchor state in mesh
-    setTimeout(() => {
-      this.sendHeartbeat('post_recovery');
-    }, 1500);
+    // Wait for bridge to be connected before publishing flushed journal
+    if (!this.mesh.isConnected) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    await this.mesh.publishTelemetry(payload);
   }
 
   destroy() {

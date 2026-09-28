@@ -41,6 +41,9 @@ async function initApp() {
     },
     onOnlineChange: (online) => {
       ui?.updateEnvironmentUI();
+    },
+    onConnectivityWarning: (warnDetail) => {
+      console.warn('[axona.track] Connectivity warning:', warnDetail);
     }
   });
 
@@ -87,11 +90,6 @@ async function initApp() {
   await mesh.start();
   ui.updateMeshMetrics();
   ui.updateEnvironmentUI();
-
-  // Send initial startup heartbeat
-  setTimeout(() => {
-    telemetry.sendHeartbeat('startup');
-  }, 1000);
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

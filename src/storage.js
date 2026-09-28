@@ -3,7 +3,47 @@
 const SNAPSHOT_KEY = 'axona.track.pre_freeze_snapshot';
 const EVENTS_KEY   = 'axona.track.events_log';
 const METRICS_KEY  = 'axona.track.session_metrics';
+const OUTBOX_KEY   = 'axona.track.offline_outbox';
 const MAX_LOCAL_EVENTS = 500;
+
+/**
+ * Queue an event occurred while offline/hidden to be flushed upon full visible recovery
+ */
+export function queueOfflineEvent(event) {
+  try {
+    const box = getOfflineOutbox();
+    box.push({
+      id: Math.random().toString(36).slice(2, 8),
+      ts: Date.now(),
+      ...event
+    });
+    if (box.length > 200) box.shift();
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(box));
+  } catch (err) {
+    console.warn('[axona.track] failed to queue offline event:', err);
+  }
+}
+
+/**
+ * Get all queued offline events
+ */
+export function getOfflineOutbox() {
+  try {
+    const raw = localStorage.getItem(OUTBOX_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Clear the offline outbox after successful batch flush
+ */
+export function clearOfflineOutbox() {
+  try {
+    localStorage.removeItem(OUTBOX_KEY);
+  } catch {}
+}
 
 /**
  * Save pre-freeze state snapshot to localStorage
