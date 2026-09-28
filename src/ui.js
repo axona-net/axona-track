@@ -2,6 +2,7 @@
 
 import { getLocalEvents, clearLocalEvents, getSessionMetrics } from './storage.js';
 import { APP_VERSION, KERNEL_VERSION } from './version.js';
+import QRCode from 'qrcode';
 
 export class TrackUI {
   constructor({ container, deviceId, platform, mesh, lifecycle, telemetry }) {
@@ -39,6 +40,15 @@ export class TrackUI {
             </div>
 
             <div class="header-badges">
+              <button class="pill pill-qr pill-clickable" id="btnOpenQr" title="Display mobile launch QR code">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+                <span>📱 Scan QR</span>
+              </button>
               <div class="pill pill-device pill-clickable" id="copyDevicePill" title="Click to copy device name">
                 <span class="status-dot connected"></span>
                 <span id="deviceNameLabel">${this.deviceId.name}</span>
@@ -168,6 +178,10 @@ export class TrackUI {
             <span>Diagnostics & Recovery Testing</span>
           </div>
           <div class="controls-grid">
+            <button class="btn btn-cyan" id="btnDeckQr">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+              Mobile Launch QR
+            </button>
             <button class="btn btn-amber" id="btnSimulateFreeze">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
               Simulate 5s Freeze
@@ -218,6 +232,49 @@ export class TrackUI {
 
       <div class="toast" id="toastNotification">
         <span id="toastMessage">Copied to clipboard!</span>
+      </div>
+
+      <!-- Mobile Launch QR Modal -->
+      <div class="modal-backdrop" id="qrModal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="qrModalTitle">
+        <div class="modal-card">
+          <div class="modal-header">
+            <div class="modal-title-group">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                <line x1="12" y1="18" x2="12.01" y2="18"></line>
+              </svg>
+              <h3 id="qrModalTitle">Launch on Mobile Device</h3>
+            </div>
+            <button class="btn-close" id="btnCloseQr" aria-label="Close modal">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-desc">Scan with your phone or tablet camera to open axona.track as a mobile mesh telemetry observer.</p>
+            <div class="qr-canvas-wrapper">
+              <canvas id="qrCanvas" width="220" height="220"></canvas>
+            </div>
+            <div class="qr-url-box">
+              <input type="text" id="qrUrlInput" readonly value="https://axona-net.github.io/axona-track/" />
+              <button class="btn btn-primary btn-copy-url" id="btnCopyQrUrl">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                Copy Link
+              </button>
+            </div>
+            <div class="qr-hint">
+              <span>💡 <strong>Standalone PWA tip:</strong> For continuous background resilience, tap "Add to Home Screen" in mobile Safari or Chrome.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Update Banner Notification -->
+      <div class="update-banner" id="updateBanner" style="display: none;" role="status">
+        <div class="update-banner-content">
+          <span id="updateBannerText">✨ Updating axona.track to latest version…</span>
+          <button class="btn btn-primary btn-sm" id="btnUpdateNow" style="display: none;">Now</button>
+        </div>
       </div>
     `;
   }
@@ -314,6 +371,102 @@ export class TrackUI {
         this._renderEventList();
       });
     });
+
+    // Mobile QR Modal Handlers
+    document.getElementById('btnOpenQr')?.addEventListener('click', () => {
+      this.showQrModal();
+    });
+    document.getElementById('btnDeckQr')?.addEventListener('click', () => {
+      this.showQrModal();
+    });
+    document.getElementById('btnCloseQr')?.addEventListener('click', () => {
+      this.hideQrModal();
+    });
+
+    const qrModal = document.getElementById('qrModal');
+    qrModal?.addEventListener('click', (e) => {
+      if (e.target === qrModal) {
+        this.hideQrModal();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.hideQrModal();
+      }
+    });
+
+    document.getElementById('btnCopyQrUrl')?.addEventListener('click', () => {
+      const urlInput = document.getElementById('qrUrlInput');
+      const url = urlInput?.value || 'https://axona-net.github.io/axona-track/';
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(url).then(() => {
+          this.showToast('Link copied to clipboard!');
+        }).catch(() => {
+          this.showToast('Copied: ' + url);
+        });
+      } else {
+        urlInput?.select();
+        document.execCommand('copy');
+        this.showToast('Link copied to clipboard!');
+      }
+    });
+  }
+
+  showQrModal() {
+    const modal = document.getElementById('qrModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+
+    const canvas = document.getElementById('qrCanvas');
+    const urlInput = document.getElementById('qrUrlInput');
+    const appUrl = (typeof window !== 'undefined' && window.location.origin.startsWith('http'))
+      ? `${window.location.origin}${window.location.pathname}`
+      : 'https://axona-net.github.io/axona-track/';
+
+    if (urlInput) urlInput.value = appUrl;
+
+    if (canvas) {
+      QRCode.toCanvas(canvas, appUrl, {
+        width: 220,
+        margin: 2,
+        color: {
+          dark: '#090d16',
+          light: '#ffffff'
+        }
+      }, (err) => {
+        if (err) console.error('[axona.track] QR draw error:', err);
+      });
+    }
+  }
+
+  hideQrModal() {
+    const modal = document.getElementById('qrModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  showUpdateBanner({ status, message, onApply }) {
+    const banner = document.getElementById('updateBanner');
+    const text = document.getElementById('updateBannerText');
+    const btnNow = document.getElementById('btnUpdateNow');
+    if (!banner || !text) return;
+
+    text.textContent = message;
+    banner.style.display = 'flex';
+
+    if (btnNow) {
+      if (status === 'deferred' && onApply) {
+        btnNow.style.display = 'inline-block';
+        btnNow.onclick = () => onApply();
+      } else {
+        btnNow.style.display = 'none';
+      }
+    }
+  }
+
+  hideUpdateBanner() {
+    const banner = document.getElementById('updateBanner');
+    if (banner) banner.style.display = 'none';
   }
 
   showToast(msg) {

@@ -7,47 +7,9 @@ import { LifecycleMonitor } from './lifecycle.js';
 import { TelemetryService } from './telemetry.js';
 import { TrackUI } from './ui.js';
 import { appendLocalEvent } from './storage.js';
-import { registerSW } from 'virtual:pwa-register';
+import { initPWAUpdater } from './updater.js';
 
-// Auto-register service worker for PWA offline capabilities with automated reload on update
-try {
-  const updateSW = registerSW({
-    immediate: true,
-    onNeedRefresh() {
-      console.log('[axona.track] New PWA bundle available; activating and refreshing');
-      updateSW(true);
-    },
-    onOfflineReady() {
-      console.log('[axona.track] App cached and ready for offline use');
-    }
-  });
-
-  // Check for updates whenever the tab/PWA returns to foreground
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      updateSW?.();
-    }
-  });
-
-  // Periodic background check every 15 minutes
-  setInterval(() => {
-    updateSW?.();
-  }, 15 * 60 * 1000);
-
-  // Reload page when new service worker activates and claims the client
-  if ('serviceWorker' in navigator) {
-    let refreshing = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!refreshing) {
-        refreshing = true;
-        console.log('[axona.track] Service worker controller changed; refreshing page to new version');
-        window.location.reload();
-      }
-    });
-  }
-} catch (err) {
-  console.warn('[axona.track] Service worker registration notice:', err);
-}
+let updater = null;
 
 async function initApp() {
   const container = document.getElementById('app');
@@ -117,6 +79,23 @@ async function initApp() {
     mesh,
     lifecycle,
     telemetry
+  });
+
+  // Initialize PWA Auto-Updater Lifecycle
+  updater = initPWAUpdater({
+    onNotice: ({ status, message }) => {
+      ui?.showUpdateBanner({
+        status,
+        message,
+        onApply: () => updater.applyNow()
+      });
+    },
+    onApplying: () => {
+      ui?.showUpdateBanner({
+        status: 'applying',
+        message: '✨ Updating axona.track to latest version…'
+      });
+    }
   });
 
   // Connect Mesh
