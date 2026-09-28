@@ -124,32 +124,32 @@ export class LifecycleMonitor {
   _handleHidden() {
     this.freezeTimestamp = Date.now();
     this.onConnectivityWarning({
-      reason: 'tab_hidden_imminent_freeze',
+      reason: 'observed_visibility_hidden',
       stateBefore: this.state
     });
     this.onPreFreeze({
-      trigger: 'visibility_hidden',
+      trigger: 'observed_visibility_hidden',
       stateBefore: this.state,
       freezeTime: this.freezeTimestamp
     });
-    this._setState('HIDDEN', { reason: 'visibility_hidden' });
+    this._setState('HIDDEN', { reason: 'observed_visibility_hidden' });
   }
 
   _handleVisible() {
     const now = Date.now();
-    const sleepDuration = this.freezeTimestamp ? (now - this.freezeTimestamp) : 0;
+    const observedIntervalMs = this.freezeTimestamp ? (now - this.freezeTimestamp) : 0;
     this.freezeTimestamp = null;
     this.lastActiveTime = now;
 
-    if (sleepDuration > 1000) {
+    if (observedIntervalMs > 1000) {
       this.onResume({
-        trigger: 'visibility_visible',
-        sleepDurationMs: sleepDuration,
-        wasSevered: sleepDuration > 5000
+        trigger: 'observed_visibility_visible',
+        observedIntervalMs,
+        continuityState: 'unprobed_prior_to_mesh_audit'
       });
     }
 
-    this._setState('ACTIVE', { reason: 'visibility_visible', sleepDurationMs: sleepDuration });
+    this._setState('ACTIVE', { reason: 'observed_visibility_visible', observedIntervalMs });
   }
 
   _handleFreeze(trigger, detail) {
@@ -158,7 +158,7 @@ export class LifecycleMonitor {
     this.freezeTimestamp = Date.now();
 
     this.onPreFreeze({
-      trigger,
+      trigger: `observed_${trigger}`,
       detail,
       stateBefore: this.state,
       freezeTime: this.freezeTimestamp
@@ -170,19 +170,19 @@ export class LifecycleMonitor {
   _handleResume(trigger, detail) {
     if (!this.isFrozen && !this.freezeTimestamp) return;
     const now = Date.now();
-    const sleepDuration = this.freezeTimestamp ? (now - this.freezeTimestamp) : 0;
+    const observedIntervalMs = this.freezeTimestamp ? (now - this.freezeTimestamp) : 0;
     this.isFrozen = false;
     this.freezeTimestamp = null;
     this.lastActiveTime = now;
 
     this.onResume({
-      trigger,
+      trigger: `observed_${trigger}`,
       detail,
-      sleepDurationMs: sleepDuration,
-      wasSevered: true
+      observedIntervalMs,
+      continuityState: 'unprobed_prior_to_mesh_audit'
     });
 
-    this._setState('RESUMED', { trigger, sleepDurationMs: sleepDuration });
+    this._setState('RESUMED', { trigger, observedIntervalMs });
 
     setTimeout(() => {
       if (this.state === 'RESUMED') {
@@ -202,20 +202,20 @@ export class LifecycleMonitor {
       const delta = now - this._lastWatchdogTick;
       this._lastWatchdogTick = now;
 
-      // If tick was delayed significantly past expected interval, OS suspended execution
+      // If tick was delayed significantly past expected interval, OS paused JS execution
       if (delta > this.DRIFT_THRESHOLD_MS) {
-        const sleepDuration = delta - this.TICK_INTERVAL_MS;
-        console.warn(`[axona.track] Time-dilation detected! Suspended for ${sleepDuration}ms`);
+        const observedClockDriftMs = delta - this.TICK_INTERVAL_MS;
+        console.warn(`[axona.track] Clock dilation detected! Drift: ${observedClockDriftMs}ms`);
 
         this.onResume({
-          trigger: 'time_dilation_watchdog',
-          sleepDurationMs: sleepDuration,
-          wasSevered: sleepDuration > 5000
+          trigger: 'clock_dilation_drift_watchdog',
+          observedIntervalMs: observedClockDriftMs,
+          continuityState: 'unprobed_prior_to_mesh_audit'
         });
 
         this._setState('RESUMED', {
-          trigger: 'time_dilation_watchdog',
-          sleepDurationMs: sleepDuration
+          trigger: 'clock_dilation_drift_watchdog',
+          observedIntervalMs: observedClockDriftMs
         });
 
         setTimeout(() => {

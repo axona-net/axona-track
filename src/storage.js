@@ -5,15 +5,28 @@ const EVENTS_KEY   = 'axona.track.events_log';
 const METRICS_KEY  = 'axona.track.session_metrics';
 const OUTBOX_KEY   = 'axona.track.offline_outbox';
 const DROPS_KEY    = 'axona.track.storage_drops';
+const LOCK_KEY     = 'axona.track.outbox_flush_lock';
 
 const MAX_LOCAL_EVENTS = 500;
 const MAX_OUTBOX_EVENTS = 200;
-const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24-hour retention limit (Aster seq 469)
+const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24-hour retention limit (Aster seq 469/471)
+
+function readRawArray(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Record storage drops due to capacity or age eviction
  */
 export function recordStorageDrops(count = 1) {
+  if (count <= 0) return 0;
   try {
     const cur = getStorageDrops();
     const updated = cur + count;
@@ -34,17 +47,73 @@ export function getStorageDrops() {
 }
 
 /**
- * Queue an event occurred while offline/hidden with 24-hour age eviction and drop tracking
+ * Prune all stored events and outbox entries older than 24 hours, persisting immediately
+ */
+export function pruneStorage() {
+  const now = Date.now();
+  let totalPruned = 0;
+
+  // 1. Prune Outbox
+  try {
+    const rawOutbox = readRawArray(OUTBOX_KEY);
+    const freshOutbox = rawOutbox.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    const ageDropped = rawOutbox.length - freshOutbox.length;
+    if (ageDropped > 0) {
+      localStorage.setItem(OUTBOX_KEY, JSON.stringify(freshOutbox));
+      recordStorageDrops(ageDropped);
+      totalPruned += ageDropped;
+    }
+  } catch {}
+
+  // 2. Prune Events Log
+  try {
+    const rawEvents = readRawArray(EVENTS_KEY);
+    const freshEvents = rawEvents.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    const ageDropped = rawEvents.length - freshEvents.length;
+    if (ageDropped > 0) {
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(freshEvents));
+      recordStorageDrops(ageDropped);
+      totalPruned += ageDropped;
+    }
+  } catch {}
+
+  return totalPruned;
+}
+
+/**
+ * Cross-tab mutex lock for flushing offline outbox
+ */
+export function acquireFlushLock(timeoutMs = 5000) {
+  try {
+    const now = Date.now();
+    const existing = parseInt(localStorage.getItem(LOCK_KEY) || '0', 10);
+    if (existing && (now - existing) < timeoutMs) {
+      return false; // Lock held by another active tab
+    }
+    localStorage.setItem(LOCK_KEY, String(now));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+export function releaseFlushLock() {
+  try {
+    localStorage.removeItem(LOCK_KEY);
+  } catch {}
+}
+
+/**
+ * Queue an event occurred while offline/hidden with persisted 24-hour age eviction and drop tracking
  */
 export function queueOfflineEvent(event) {
   try {
     const now = Date.now();
-    let box = getOfflineOutbox();
+    const raw = readRawArray(OUTBOX_KEY);
 
     // 1. Evict entries older than 24 hours
-    const fresh = box.filter((e) => (now - e.ts) < MAX_AGE_MS);
-    const ageDropped = box.length - fresh.length;
-    box = fresh;
+    let box = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    const ageDropped = raw.length - box.length;
 
     box.push({
       id: Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4),
@@ -70,15 +139,18 @@ export function queueOfflineEvent(event) {
 }
 
 /**
- * Get all queued offline events, filtered by 24h max age
+ * Get all queued offline events, filtered by 24h max age with persisted prune
  */
 export function getOfflineOutbox() {
   try {
-    const raw = localStorage.getItem(OUTBOX_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
     const now = Date.now();
-    return Array.isArray(parsed) ? parsed.filter((e) => (now - e.ts) < MAX_AGE_MS) : [];
+    const raw = readRawArray(OUTBOX_KEY);
+    const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    if (fresh.length !== raw.length) {
+      localStorage.setItem(OUTBOX_KEY, JSON.stringify(fresh));
+      recordStorageDrops(raw.length - fresh.length);
+    }
+    return fresh;
   } catch {
     return [];
   }
@@ -92,7 +164,7 @@ export function ackOfflineOutbox(ackedIds) {
   if (!Array.isArray(ackedIds) || ackedIds.length === 0) return;
   try {
     const ackSet = new Set(ackedIds);
-    const current = getOfflineOutbox();
+    const current = readRawArray(OUTBOX_KEY);
     const remaining = current.filter((e) => !ackSet.has(e.id));
     localStorage.setItem(OUTBOX_KEY, JSON.stringify(remaining));
   } catch (err) {
@@ -152,12 +224,16 @@ export function peekPreFreezeSnapshot() {
 }
 
 /**
- * Append an event to the local rotating log with 24-hour age eviction
+ * Append an event to the local rotating log with persisted 24-hour age eviction and drop tracking
  */
 export function appendLocalEvent(event) {
   try {
     const now = Date.now();
-    let events = getLocalEvents();
+    const raw = readRawArray(EVENTS_KEY);
+
+    // Evict older than 24h
+    let events = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    const ageDropped = raw.length - events.length;
 
     events.unshift({
       id: Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4),
@@ -165,11 +241,14 @@ export function appendLocalEvent(event) {
       ...event
     });
 
-    // Evict older than 24h
-    events = events.filter((e) => (now - e.ts) < MAX_AGE_MS);
-
+    let capDropped = 0;
     if (events.length > MAX_LOCAL_EVENTS) {
-      events.length = MAX_LOCAL_EVENTS;
+      capDropped = events.length - MAX_LOCAL_EVENTS;
+      events = events.slice(0, MAX_LOCAL_EVENTS);
+    }
+
+    if (ageDropped > 0 || capDropped > 0) {
+      recordStorageDrops(ageDropped + capDropped);
     }
 
     localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
@@ -179,15 +258,18 @@ export function appendLocalEvent(event) {
 }
 
 /**
- * Retrieve local event log filtered by 24h age limit
+ * Retrieve local event log filtered by 24h age limit with persisted cleanup
  */
 export function getLocalEvents() {
   try {
-    const raw = localStorage.getItem(EVENTS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
     const now = Date.now();
-    return Array.isArray(parsed) ? parsed.filter((e) => (now - e.ts) < MAX_AGE_MS) : [];
+    const raw = readRawArray(EVENTS_KEY);
+    const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
+    if (fresh.length !== raw.length) {
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(fresh));
+      recordStorageDrops(raw.length - fresh.length);
+    }
+    return fresh;
   } catch {
     return [];
   }
@@ -243,3 +325,9 @@ export function getSessionMetrics() {
     };
   }
 }
+
+// Perform initial pruning on module load
+try {
+  pruneStorage();
+  localStorage.removeItem('axona.track.device_uuid');
+} catch {}

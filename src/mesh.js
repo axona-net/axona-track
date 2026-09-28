@@ -247,10 +247,10 @@ export class MeshClient {
         v: 1,
         handle: payload?.deviceName || handle,
         authorClass: 'instrument',
-        text: JSON.stringify(payload, null, 2),
+        text: payload?.summary || `[${payload?.type || 'telemetry'}] ${payload?.deviceName || handle}`,
         data: payload
       };
-      await this.peer.pub(topicDesc, JSON.stringify(envelope), { signWith: this.author });
+      await this.peer.pub(topicDesc, envelope, { signWith: this.author });
       return true;
     } catch (err) {
       console.warn('[axona.track] Telemetry publish failed:', err);

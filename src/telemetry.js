@@ -8,7 +8,10 @@ import {
   popPreFreezeSnapshot,
   queueOfflineEvent,
   getOfflineOutbox,
-  clearOfflineOutbox
+  ackOfflineOutbox,
+  clearOfflineOutbox,
+  acquireFlushLock,
+  releaseFlushLock
 } from './storage.js';
 
 export class TelemetryService {
@@ -288,14 +291,18 @@ export class TelemetryService {
 
   async _handleResumeAndFlush(resumeDetail) {
     if (this._isFlushing) return;
+    if (!acquireFlushLock(5000)) {
+      console.log('[axona.track] Flush lock held by another tab; deferring');
+      return;
+    }
     this._isFlushing = true;
 
     try {
       const preSnapshot = popPreFreezeSnapshot();
-      const sleepDurationMs = resumeDetail.sleepDurationMs || 0;
+      const observedIntervalMs = resumeDetail.observedIntervalMs || resumeDetail.sleepDurationMs || 0;
 
       // 1. Trigger mesh reconnect and recovery probe with preSnapshot
-      const recoveryResult = await this.mesh.recoverFromBackground(sleepDurationMs, preSnapshot);
+      const recoveryResult = await this.mesh.recoverFromBackground(observedIntervalMs, preSnapshot);
 
       const rolesBefore = preSnapshot?.meshSnapshot?.roles?.length ?? (recoveryResult.rolesBeforeSleep || 0);
       const prePeers = preSnapshot?.meshSnapshot?.peerCount ?? recoveryResult.prePeersCount;
@@ -315,9 +322,9 @@ export class TelemetryService {
         v: 1,
         type: 'recovery_journal_flush',
         deviceName: this.deviceId.name,
-        summary: `Tab restored after ${Math.round(sleepDurationMs / 1000)}s sleep. Flushed ${heldEvents.length} held events.`,
+        summary: `Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Flushed ${heldEvents.length} held events.`,
         recovery: {
-          sleepDurationMs,
+          observedIntervalMs,
           passiveAudit: recoveryResult.passiveAudit,
           reconnectLatencyMs: recoveryResult.reconnectLatencyMs,
           settledBridgeConnected: recoveryResult.settledBridgeConnected,
@@ -335,7 +342,7 @@ export class TelemetryService {
 
       appendLocalEvent({
         category: 'recovery',
-        title: `Wake Recovery & Offline Journal Flush (${Math.round(sleepDurationMs / 1000)}s sleep)`,
+        title: `Wake Recovery & Offline Journal Flush (${Math.round(observedIntervalMs / 1000)}s interval)`,
         detail: `Continuity: ${recoveryResult.passiveAudit.continuityState} · Reconnect: ${recoveryResult.reconnectLatencyMs}ms · Held Events: ${heldEvents.length}`,
         payload
       });
@@ -361,6 +368,7 @@ export class TelemetryService {
       console.error('[axona.track] Error during resume and flush:', err);
     } finally {
       this._isFlushing = false;
+      releaseFlushLock();
     }
   }
 
