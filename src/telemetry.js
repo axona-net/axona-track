@@ -102,9 +102,9 @@ export class TelemetryService {
 
     // 2. On State Change (ACTIVE -> HIDDEN -> FROZEN -> RESUMED -> OFFLINE)
     const origStateChange = this.lifecycle.onStateChange;
-    this.lifecycle.onStateChange = (newState, oldState, detail) => {
+    this.lifecycle.onStateChange = async (newState, oldState, detail) => {
       origStateChange?.(newState, oldState, detail);
-      this._handleLifecycleTransition(newState, oldState, detail);
+      await this._handleLifecycleTransition(newState, oldState, detail);
     };
 
     // 3. Pre-freeze snapshot (called upon hidden or freeze)
@@ -289,12 +289,17 @@ export class TelemetryService {
       ts: Date.now()
     };
 
-    appendLocalEvent({
-      category: 'lifecycle',
-      title: `State Transition: ${oldState} ➔ ${newState}`,
-      detail: detail?.reason ? `Trigger: ${detail.reason} (Now ${newState})` : `Now ${newState}`,
-      payload
-    });
+    try {
+      await appendLocalEvent({
+        category: 'lifecycle',
+        title: `State Transition: ${oldState} ➔ ${newState}`,
+        detail: detail?.reason ? `Trigger: ${detail.reason} (Now ${newState})` : `Now ${newState}`,
+        deviceName: this.deviceId.name,
+        payload
+      });
+    } catch (err) {
+      console.error('[axona.track] Failed to persist lifecycle event:', err);
+    }
 
     this.onTelemetryEvent('lifecycle', payload);
 

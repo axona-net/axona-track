@@ -411,6 +411,13 @@ export class TrackUI {
         this.showToast('Link copied to clipboard!');
       }
     });
+
+    // Cross-tab synchronization: re-render event list when another window writes to storage
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'axona.track.events_log') {
+        this._renderEventList();
+      }
+    });
   }
 
   showQrModal() {
@@ -502,7 +509,6 @@ export class TrackUI {
     else if (state === 'OFFLINE') desc = 'Network interface disconnected';
 
     if (subtext) subtext.textContent = desc;
-    this._renderEventList();
   }
 
   updateBridgeStatus(status, message) {
@@ -594,11 +600,18 @@ export class TrackUI {
       else if (ev.category === 'recovery') badgeClass = 'emerald';
       else if (ev.category === 'lifecycle') badgeClass = 'violet';
 
+      const evDevice = ev.deviceName || ev.payload?.deviceName;
+      const isCurrentDevice = !evDevice || evDevice === this.deviceId.name;
+      const deviceTag = evDevice
+        ? `<span class="badge-tag ${isCurrentDevice ? 'emerald' : 'cyan'}" style="font-size: 0.68rem;" title="${this._escape(evDevice)}">${isCurrentDevice ? 'This tab' : this._escape(evDevice)}</span>`
+        : '';
+
       return `
         <div class="event-item" data-id="${ev.id}">
           <div class="event-item-header">
             <div class="event-item-left">
               <span class="badge-tag ${badgeClass}">${ev.category}</span>
+              ${deviceTag}
               <span class="event-title">${this._escape(ev.title)}</span>
             </div>
             <span class="event-time">${timeStr}</span>
