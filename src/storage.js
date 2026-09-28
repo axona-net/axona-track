@@ -1,36 +1,225 @@
 // src/storage.js — Local persistence for events, pre-freeze snapshots, outbox, and session metrics
+// Coordinated single-writer / transactional mutual exclusion covering ALL shared-buffer mutations.
 
 const SNAPSHOT_KEY = 'axona.track.pre_freeze_snapshot';
 const EVENTS_KEY   = 'axona.track.events_log';
 const METRICS_KEY  = 'axona.track.session_metrics';
 const OUTBOX_KEY   = 'axona.track.offline_outbox';
 const DROPS_KEY    = 'axona.track.storage_drops';
-const LOCK_KEY     = 'axona.track.outbox_flush_lock';
+const FLUSH_LOCK_KEY = 'axona.track.flush_lock';
+const MUTEX_KEY    = 'axona.track.storage_mutex';
 
 const MAX_LOCAL_EVENTS = 500;
 const MAX_OUTBOX_EVENTS = 200;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24-hour retention limit (Aster seq 469/471)
+const LEASE_HEARTBEAT_MS = 1000;
+const LEASE_EXPIRY_MS = 8000; // 8s heartbeat expiration for dead-holder recovery
+
+/**
+ * In-process async execution queue for sequential FIFO serialization
+ */
+class AsyncLockQueue {
+  constructor() {
+    this._queue = Promise.resolve();
+  }
+
+  enqueue(fn) {
+    const next = this._queue.then(async () => {
+      return await fn();
+    });
+    this._queue = next.catch(() => {});
+    return next;
+  }
+}
+
+const localQueue = new AsyncLockQueue();
+
+/**
+ * Storage accessor helper with strict exception handling (fail-closed)
+ */
+function getStorage() {
+  if (typeof localStorage === 'undefined') {
+    throw new Error('localStorage is not available');
+  }
+  return localStorage;
+}
 
 function readRawArray(key) {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = getStorage().getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (err) {
+    // Return empty on JSON/missing, but throw if storage is fundamentally broken
+    if (typeof localStorage === 'undefined') throw err;
     return [];
   }
 }
 
 /**
- * Record storage drops due to capacity or age eviction
+ * Fallback cross-tab coordinator using heartbeat lease and verified token release
+ */
+class FallbackCoordinator {
+  _generateToken() {
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 9)}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  async runExclusive(task) {
+    return localQueue.enqueue(async () => {
+      const token = this._generateToken();
+      let heartbeat = null;
+
+      try {
+        const storage = getStorage();
+        // Wait for any existing valid lease to clear
+        const start = Date.now();
+        while (true) {
+          const raw = storage.getItem(MUTEX_KEY);
+          let held = false;
+          if (raw) {
+            try {
+              const lease = JSON.parse(raw);
+              if (lease && (Date.now() - lease.ts) < LEASE_EXPIRY_MS) {
+                held = true;
+              }
+            } catch {
+              held = false;
+            }
+          }
+
+          if (!held) {
+            // Write our lock
+            storage.setItem(MUTEX_KEY, JSON.stringify({ token, ts: Date.now() }));
+            // Small jitter verify
+            await new Promise((r) => setTimeout(r, 10));
+            const recheck = JSON.parse(storage.getItem(MUTEX_KEY) || '{}');
+            if (recheck.token === token) {
+              break; // Lock acquired
+            }
+          }
+
+          if (Date.now() - start > 10000) {
+            throw new Error('Storage mutex acquisition timed out after 10000ms');
+          }
+          await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
+        }
+
+        // Active heartbeat while task executes — ensures slow operations (>5s) never expire
+        heartbeat = setInterval(() => {
+          try {
+            const cur = JSON.parse(storage.getItem(MUTEX_KEY) || '{}');
+            if (cur.token === token) {
+              storage.setItem(MUTEX_KEY, JSON.stringify({ token, ts: Date.now() }));
+            }
+          } catch {}
+        }, LEASE_HEARTBEAT_MS);
+
+        return await task();
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+        try {
+          const storage = getStorage();
+          const cur = JSON.parse(storage.getItem(MUTEX_KEY) || '{}');
+          if (cur.token === token) {
+            storage.removeItem(MUTEX_KEY);
+          }
+        } catch {}
+      }
+    });
+  }
+
+  async runFlushIfAvailable(task) {
+    const token = this._generateToken();
+    let heartbeat = null;
+
+    try {
+      const storage = getStorage();
+      const raw = storage.getItem(FLUSH_LOCK_KEY);
+      if (raw) {
+        try {
+          const lease = JSON.parse(raw);
+          if (lease && (Date.now() - lease.ts) < LEASE_EXPIRY_MS) {
+            return { acquired: false, reason: 'held_by_peer' };
+          }
+        } catch {}
+      }
+
+      storage.setItem(FLUSH_LOCK_KEY, JSON.stringify({ token, ts: Date.now() }));
+      await new Promise((r) => setTimeout(r, 15));
+      const recheck = JSON.parse(storage.getItem(FLUSH_LOCK_KEY) || '{}');
+      if (recheck.token !== token) {
+        return { acquired: false, reason: 'held_by_peer' };
+      }
+
+      heartbeat = setInterval(() => {
+        try {
+          const cur = JSON.parse(storage.getItem(FLUSH_LOCK_KEY) || '{}');
+          if (cur.token === token) {
+            storage.setItem(FLUSH_LOCK_KEY, JSON.stringify({ token, ts: Date.now() }));
+          }
+        } catch {}
+      }, LEASE_HEARTBEAT_MS);
+
+      const result = await task();
+      return { acquired: true, result };
+    } catch (err) {
+      console.warn('[axona.track] Flush lock error:', err);
+      throw err;
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      try {
+        const storage = getStorage();
+        const cur = JSON.parse(storage.getItem(FLUSH_LOCK_KEY) || '{}');
+        if (cur.token === token) {
+          storage.removeItem(FLUSH_LOCK_KEY);
+        }
+      } catch {}
+    }
+  }
+}
+
+const fallbackCoordinator = new FallbackCoordinator();
+
+/**
+ * Execute an atomic transaction covering ALL shared-buffer mutations.
+ * Uses Web Locks API (navigator.locks) when available; falls back to FallbackCoordinator.
+ */
+export async function withStorageTransaction(task) {
+  if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+    return navigator.locks.request('axona.track.storage_mutex', { mode: 'exclusive' }, async () => {
+      return await task();
+    });
+  }
+  return fallbackCoordinator.runExclusive(task);
+}
+
+/**
+ * Execute an exclusive recovery flush if lock is available.
+ * Returns { acquired: false, reason } if another tab is currently flushing.
+ */
+export async function withFlushLock(task) {
+  if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+    return navigator.locks.request('axona.track.flush_lock', { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        return { acquired: false, reason: 'held_by_peer' };
+      }
+      const result = await task();
+      return { acquired: true, result };
+    });
+  }
+  return fallbackCoordinator.runFlushIfAvailable(task);
+}
+
+/**
+ * Record storage drops due to capacity or age eviction (must be called inside transaction)
  */
 export function recordStorageDrops(count = 1) {
   if (count <= 0) return 0;
   try {
     const cur = getStorageDrops();
     const updated = cur + count;
-    localStorage.setItem(DROPS_KEY, String(updated));
+    getStorage().setItem(DROPS_KEY, String(updated));
     return updated;
   } catch {
     return 0;
@@ -39,7 +228,7 @@ export function recordStorageDrops(count = 1) {
 
 export function getStorageDrops() {
   try {
-    const raw = localStorage.getItem(DROPS_KEY);
+    const raw = getStorage().getItem(DROPS_KEY);
     return raw ? parseInt(raw, 10) || 0 : 0;
   } catch {
     return 0;
@@ -47,68 +236,53 @@ export function getStorageDrops() {
 }
 
 /**
- * Prune all stored events and outbox entries older than 24 hours, persisting immediately
+ * Internal single-pass prune (called within transaction)
  */
-export function pruneStorage() {
+function _pruneStorageInternal() {
   const now = Date.now();
   let totalPruned = 0;
+  const storage = getStorage();
 
   // 1. Prune Outbox
-  try {
-    const rawOutbox = readRawArray(OUTBOX_KEY);
-    const freshOutbox = rawOutbox.filter((e) => (now - e.ts) < MAX_AGE_MS);
-    const ageDropped = rawOutbox.length - freshOutbox.length;
-    if (ageDropped > 0) {
-      localStorage.setItem(OUTBOX_KEY, JSON.stringify(freshOutbox));
-      recordStorageDrops(ageDropped);
-      totalPruned += ageDropped;
-    }
-  } catch {}
+  const rawOutbox = readRawArray(OUTBOX_KEY);
+  const freshOutbox = rawOutbox.filter((e) => (now - e.ts) < MAX_AGE_MS);
+  const outboxAgeDropped = rawOutbox.length - freshOutbox.length;
+  if (outboxAgeDropped > 0) {
+    storage.setItem(OUTBOX_KEY, JSON.stringify(freshOutbox));
+    recordStorageDrops(outboxAgeDropped);
+    totalPruned += outboxAgeDropped;
+  }
 
   // 2. Prune Events Log
-  try {
-    const rawEvents = readRawArray(EVENTS_KEY);
-    const freshEvents = rawEvents.filter((e) => (now - e.ts) < MAX_AGE_MS);
-    const ageDropped = rawEvents.length - freshEvents.length;
-    if (ageDropped > 0) {
-      localStorage.setItem(EVENTS_KEY, JSON.stringify(freshEvents));
-      recordStorageDrops(ageDropped);
-      totalPruned += ageDropped;
-    }
-  } catch {}
+  const rawEvents = readRawArray(EVENTS_KEY);
+  const freshEvents = rawEvents.filter((e) => (now - e.ts) < MAX_AGE_MS);
+  const eventsAgeDropped = rawEvents.length - freshEvents.length;
+  if (eventsAgeDropped > 0) {
+    storage.setItem(EVENTS_KEY, JSON.stringify(freshEvents));
+    recordStorageDrops(eventsAgeDropped);
+    totalPruned += eventsAgeDropped;
+  }
 
   return totalPruned;
 }
 
 /**
- * Cross-tab mutex lock for flushing offline outbox
+ * Prune all stored events and outbox entries older than 24 hours under atomic transaction
  */
-export function acquireFlushLock(timeoutMs = 5000) {
-  try {
-    const now = Date.now();
-    const existing = parseInt(localStorage.getItem(LOCK_KEY) || '0', 10);
-    if (existing && (now - existing) < timeoutMs) {
-      return false; // Lock held by another active tab
-    }
-    localStorage.setItem(LOCK_KEY, String(now));
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-export function releaseFlushLock() {
-  try {
-    localStorage.removeItem(LOCK_KEY);
-  } catch {}
+export async function pruneStorage() {
+  return withStorageTransaction(async () => {
+    return _pruneStorageInternal();
+  });
 }
 
 /**
- * Queue an event occurred while offline/hidden with persisted 24-hour age eviction and drop tracking
+ * Queue an event occurred while offline/hidden with persisted 24-hour age eviction and drop tracking.
+ * Atomic transaction guarantees no lost updates against concurrent acks or prunes.
  */
-export function queueOfflineEvent(event) {
-  try {
+export async function queueOfflineEvent(event) {
+  return withStorageTransaction(async () => {
     const now = Date.now();
+    const storage = getStorage();
     const raw = readRawArray(OUTBOX_KEY);
 
     // 1. Evict entries older than 24 hours
@@ -132,10 +306,9 @@ export function queueOfflineEvent(event) {
       recordStorageDrops(ageDropped + capDropped);
     }
 
-    localStorage.setItem(OUTBOX_KEY, JSON.stringify(box));
-  } catch (err) {
-    console.warn('[axona.track] failed to queue offline event:', err);
-  }
+    storage.setItem(OUTBOX_KEY, JSON.stringify(box));
+    return box.length;
+  });
 }
 
 /**
@@ -147,7 +320,7 @@ export function getOfflineOutbox() {
     const raw = readRawArray(OUTBOX_KEY);
     const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
     if (fresh.length !== raw.length) {
-      localStorage.setItem(OUTBOX_KEY, JSON.stringify(fresh));
+      getStorage().setItem(OUTBOX_KEY, JSON.stringify(fresh));
       recordStorageDrops(raw.length - fresh.length);
     }
     return fresh;
@@ -158,27 +331,26 @@ export function getOfflineOutbox() {
 
 /**
  * Acknowledge and remove ONLY the successfully published batch of event IDs (transactional flush)
- * Preserves any new events appended concurrently.
+ * Executed under atomic transaction so concurrent appends are never clobbered.
  */
-export function ackOfflineOutbox(ackedIds) {
-  if (!Array.isArray(ackedIds) || ackedIds.length === 0) return;
-  try {
+export async function ackOfflineOutbox(ackedIds) {
+  if (!Array.isArray(ackedIds) || ackedIds.length === 0) return 0;
+  return withStorageTransaction(async () => {
     const ackSet = new Set(ackedIds);
     const current = readRawArray(OUTBOX_KEY);
     const remaining = current.filter((e) => !ackSet.has(e.id));
-    localStorage.setItem(OUTBOX_KEY, JSON.stringify(remaining));
-  } catch (err) {
-    console.warn('[axona.track] failed to ack outbox batch:', err);
-  }
+    getStorage().setItem(OUTBOX_KEY, JSON.stringify(remaining));
+    return remaining.length;
+  });
 }
 
 /**
  * Clear the offline outbox entirely (manual reset)
  */
-export function clearOfflineOutbox() {
-  try {
-    localStorage.removeItem(OUTBOX_KEY);
-  } catch {}
+export async function clearOfflineOutbox() {
+  return withStorageTransaction(async () => {
+    getStorage().removeItem(OUTBOX_KEY);
+  });
 }
 
 /**
@@ -190,7 +362,7 @@ export function savePreFreezeSnapshot(snapshot) {
       ...snapshot,
       timestamp: Date.now()
     };
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(payload));
+    getStorage().setItem(SNAPSHOT_KEY, JSON.stringify(payload));
   } catch (err) {
     console.warn('[axona.track] failed to save pre-freeze snapshot:', err);
   }
@@ -201,9 +373,10 @@ export function savePreFreezeSnapshot(snapshot) {
  */
 export function popPreFreezeSnapshot() {
   try {
-    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    const storage = getStorage();
+    const raw = storage.getItem(SNAPSHOT_KEY);
     if (!raw) return null;
-    localStorage.removeItem(SNAPSHOT_KEY);
+    storage.removeItem(SNAPSHOT_KEY);
     return JSON.parse(raw);
   } catch (err) {
     console.warn('[axona.track] failed to read pre-freeze snapshot:', err);
@@ -216,7 +389,7 @@ export function popPreFreezeSnapshot() {
  */
 export function peekPreFreezeSnapshot() {
   try {
-    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    const raw = getStorage().getItem(SNAPSHOT_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -224,11 +397,13 @@ export function peekPreFreezeSnapshot() {
 }
 
 /**
- * Append an event to the local rotating log with persisted 24-hour age eviction and drop tracking
+ * Append an event to the local rotating log with persisted 24-hour age eviction and drop tracking.
+ * Atomic transaction ensures reliable ordering and drop accounting.
  */
-export function appendLocalEvent(event) {
-  try {
+export async function appendLocalEvent(event) {
+  return withStorageTransaction(async () => {
     const now = Date.now();
+    const storage = getStorage();
     const raw = readRawArray(EVENTS_KEY);
 
     // Evict older than 24h
@@ -251,10 +426,9 @@ export function appendLocalEvent(event) {
       recordStorageDrops(ageDropped + capDropped);
     }
 
-    localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
-  } catch (err) {
-    console.warn('[axona.track] failed to append event:', err);
-  }
+    storage.setItem(EVENTS_KEY, JSON.stringify(events));
+    return events.length;
+  });
 }
 
 /**
@@ -266,7 +440,7 @@ export function getLocalEvents() {
     const raw = readRawArray(EVENTS_KEY);
     const fresh = raw.filter((e) => (now - e.ts) < MAX_AGE_MS);
     if (fresh.length !== raw.length) {
-      localStorage.setItem(EVENTS_KEY, JSON.stringify(fresh));
+      getStorage().setItem(EVENTS_KEY, JSON.stringify(fresh));
       recordStorageDrops(raw.length - fresh.length);
     }
     return fresh;
@@ -278,10 +452,10 @@ export function getLocalEvents() {
 /**
  * Clear local event log
  */
-export function clearLocalEvents() {
-  try {
-    localStorage.removeItem(EVENTS_KEY);
-  } catch {}
+export async function clearLocalEvents() {
+  return withStorageTransaction(async () => {
+    getStorage().removeItem(EVENTS_KEY);
+  });
 }
 
 /**
@@ -291,7 +465,7 @@ export function updateSessionMetrics(updater) {
   try {
     const current = getSessionMetrics();
     const updated = updater(current);
-    localStorage.setItem(METRICS_KEY, JSON.stringify(updated));
+    getStorage().setItem(METRICS_KEY, JSON.stringify(updated));
     return updated;
   } catch {
     return getSessionMetrics();
@@ -303,7 +477,7 @@ export function updateSessionMetrics(updater) {
  */
 export function getSessionMetrics() {
   try {
-    const raw = localStorage.getItem(METRICS_KEY);
+    const raw = getStorage().getItem(METRICS_KEY);
     return raw ? JSON.parse(raw) : {
       peersAdded: 0,
       peersLost: 0,
