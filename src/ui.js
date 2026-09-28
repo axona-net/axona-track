@@ -38,7 +38,7 @@ export class TrackUI {
             </div>
 
             <div class="header-badges">
-              <div class="pill pill-device pill-clickable" id="copyDevicePill" title="Click to copy full UUID">
+              <div class="pill pill-device pill-clickable" id="copyDevicePill" title="Click to copy device name">
                 <span class="status-dot connected"></span>
                 <span id="deviceNameLabel">${this.deviceId.name}</span>
               </div>
@@ -222,14 +222,15 @@ export class TrackUI {
   }
 
   _bindEvents() {
-    // Copy Device UUID
+    // Copy Device Name
     document.getElementById('copyDevicePill')?.addEventListener('click', () => {
+      const name = this.deviceId.name;
       if (navigator.clipboard) {
-        navigator.clipboard.writeText(this.deviceId.uuid).then(() => {
-          this.showToast(`UUID copied: ${this.deviceId.uuid}`);
+        navigator.clipboard.writeText(name).then(() => {
+          this.showToast(`Device name copied: ${name}`);
         });
       } else {
-        this.showToast(`Device: ${this.deviceId.uuid}`);
+        this.showToast(`Device: ${name}`);
       }
     });
 

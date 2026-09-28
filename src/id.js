@@ -70,18 +70,18 @@ export function detectPlatform() {
 }
 
 /**
- * Get or create persistent device ID & human-friendly slug
+ * Get or create persistent human-friendly device name (UUID removed per David / Council)
  */
-export function getOrCreateDeviceId() {
-  let uuid = localStorage.getItem('axona.track.device_uuid');
-  let name = localStorage.getItem('axona.track.device_name');
+export function getOrCreateDeviceName() {
+  // Clear any legacy UUID from storage
+  try {
+    localStorage.removeItem('axona.track.device_uuid');
+  } catch {}
 
-  if (!uuid) {
-    uuid = (typeof crypto.randomUUID === 'function') 
-      ? crypto.randomUUID() 
-      : 'dev-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
-    localStorage.setItem('axona.track.device_uuid', uuid);
-  }
+  let name = null;
+  try {
+    name = localStorage.getItem('axona.track.device_name');
+  } catch {}
 
   if (!name) {
     const platform = detectPlatform();
@@ -89,13 +89,20 @@ export function getOrCreateDeviceId() {
     const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
     const osShort = platform.os.toLowerCase().replace(/[^a-z0-9]/g, '');
     const modeShort = platform.isStandalone ? 'pwa' : 'tab';
-    const hex = uuid.replace(/-/g, '').slice(0, 4);
+    const rand = Math.random().toString(36).slice(2, 6);
 
-    name = `${adj}-${animal}-${osShort}-${modeShort}-${hex}`;
-    localStorage.setItem('axona.track.device_name', name);
+    name = `${adj}-${animal}-${osShort}-${modeShort}-${rand}`;
+    try {
+      localStorage.setItem('axona.track.device_name', name);
+    } catch {}
   }
 
-  return { uuid, name };
+  return name;
+}
+
+// Backward-compat alias returning { name }
+export function getOrCreateDeviceId() {
+  return { name: getOrCreateDeviceName() };
 }
 
 /**

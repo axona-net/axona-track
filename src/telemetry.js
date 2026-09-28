@@ -12,7 +12,7 @@ export class TelemetryService {
 
     this.startTime = Date.now();
     this.heartbeatInterval = null;
-    this.HEARTBEAT_INTERVAL_MS = 25000; // 25s regular heartbeat
+    this.HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000; // 30-minute periodic heartbeat (per David directive)
 
     this._bindLifecycleHooks();
     this._bindMeshHooks();
@@ -40,20 +40,13 @@ export class TelemetryService {
       v: 1,
       trigger,
       deviceName: this.deviceId.name,
-      deviceUuid: this.deviceId.uuid,
       platform: {
         os: platform.os,
         browser: platform.browser,
         isStandalone: platform.isStandalone,
         displayMode: platform.displayMode,
-        hardwareConcurrency: platform.hardwareConcurrency,
-        deviceMemory: platform.deviceMemory,
         onLine: envStats.network.onLine,
-        effectiveType: envStats.network.effectiveType,
-        downlink: envStats.network.downlink,
-        rtt: envStats.network.rtt,
-        batteryLevel: envStats.battery?.level ?? null,
-        isCharging: envStats.battery?.charging ?? null
+        effectiveType: envStats.network.effectiveType
       },
       lifecycleState: this.lifecycle.state.toLowerCase(),
       mesh: {

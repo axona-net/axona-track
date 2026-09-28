@@ -256,13 +256,20 @@ export class MeshClient {
 
   /**
    * Publish telemetry payload to #axona-track
+   * Formatted with handle and authorClass: 'stream' for axona.chat compatibility
    */
-  async publishTelemetry(payload) {
+  async publishTelemetry(payload, handle = 'axona-track') {
     if (!this.peer || !this.author) return false;
     try {
       const topicDesc = { region: this.region, name: TELEMETRY_TOPIC };
-      const rawString = JSON.stringify(payload);
-      await this.peer.pub(topicDesc, rawString, { signWith: this.author });
+      const envelope = {
+        v: 1,
+        handle: payload?.deviceName || handle,
+        authorClass: 'stream',
+        text: JSON.stringify(payload, null, 2),
+        data: payload
+      };
+      await this.peer.pub(topicDesc, JSON.stringify(envelope), { signWith: this.author });
       return true;
     } catch (err) {
       console.warn('[axona.track] Telemetry publish failed:', err);
