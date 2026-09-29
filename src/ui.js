@@ -57,10 +57,13 @@ export class TrackUI {
               <div class="pill pill-pwa">
                 <span>${this.platform.isStandalone ? '📱 Standalone PWA' : '🌐 Browser Tab'}</span>
               </div>
+              <div class="pill pill-net ${this.mesh.network}" id="networkPill" title="Target Network: ${this.mesh.bridgeUrl}">
+                <span>${this.mesh.network === 'prod' ? '⚡ PROD' : '🧪 TESTNET'}</span>
+              </div>
               <div class="pill pill-region">
                 <span id="regionLabel">${this.mesh.region}</span>
               </div>
-              <div class="pill" id="bridgeStatusPill">
+              <div class="pill" id="bridgeStatusPill" title="${this.mesh.bridgeUrl}">
                 <span class="status-dot connecting" id="bridgeDot"></span>
                 <span id="bridgeStatusText">Connecting…</span>
               </div>

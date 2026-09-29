@@ -29,6 +29,7 @@ export class MeshClient {
 
     this.region = this._resolveRegion();
     this.bridgeUrl = this._resolveBridgeUrl();
+    this.network = this.bridgeUrl.includes('testnet') ? 'testnet' : 'prod';
 
     // Peer tracking
     this.peers = new Map(); // peerId -> { id, state, rtt, candidateType, connectedAt, lastSeen }
