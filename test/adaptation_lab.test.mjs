@@ -1,4 +1,4 @@
-// test/adaptation_lab.test.mjs — Deterministic unit tests for Adaptation Lab (v0.2.0)
+// test/adaptation_lab.test.mjs — Deterministic unit tests for Adaptation Lab (v0.2.1)
 
 import assert from 'node:assert/strict';
 import { AdaptationLab } from '../src/lab.js';
@@ -45,34 +45,54 @@ await test('Test 1: Handoff simulation resolves with accurate outcome and denomi
 await test('Test 2: Tier classification and retention state accounting', async () => {
   const lab = new AdaptationLab({ mode: 'offline_mock' });
 
-  // Micro-pause (< 10s)
+  // Under 10s
   const res1 = lab.runTest2GracePeriod({ simulatedIntervalMs: 4500, prePeersCount: 5, survivingPeersCount: 5 });
-  assert.equal(res1.tier, 'tier_1_micropause');
+  assert.equal(res1.tier, 'tier_under_10s');
   assert.equal(res1.retentionRatio, 1.0);
   assert.equal(res1.retentionState, 'cached_peer_ids_retained');
 
-  // Screen lock (10s - 60s)
+  // 10s - 60s
   const res2 = lab.runTest2GracePeriod({ simulatedIntervalMs: 25000, prePeersCount: 4, survivingPeersCount: 3 });
-  assert.equal(res2.tier, 'tier_2_screen_lock');
+  assert.equal(res2.tier, 'tier_10s_to_60s');
   assert.equal(res2.retentionRatio, 0.75);
 
-  // Deep freeze (> 5m) with zero retained
+  // Over 5m with zero retained
   const res3 = lab.runTest2GracePeriod({ simulatedIntervalMs: 400000, prePeersCount: 4, survivingPeersCount: 0 });
-  assert.equal(res3.tier, 'tier_4_deep_freeze');
+  assert.equal(res3.tier, 'tier_over_5m');
   assert.equal(res3.retentionRatio, 0.0);
   assert.equal(res3.retentionState, 'no_cached_peer_ids_retained');
+
+  // Baseline unavailable in live study when no pre-freeze snapshot exists
+  const liveLab = new AdaptationLab({ mode: 'live_study' });
+  const res4 = liveLab.runTest2GracePeriod({ simulatedIntervalMs: 5000 });
+  assert.equal(res4.retentionState, 'baseline_unavailable');
+  assert.equal(res4.prePeersCount, null);
+  assert.equal(res4.retentionRatio, null);
 });
 
 // 4. Test 3: Fast-Path Reconnection & Active Channel Probing
-await test('Test 3: Active probing respects finite bounds and median calculation', async () => {
+await test('Test 3: Active probing respects finite bounds, clamping (<=3), and median calculation', async () => {
   const lab = new AdaptationLab({ mode: 'offline_mock' });
 
-  const res = await lab.runTest3FastPath({ probeTimeoutMs: 1000, maxProbes: 2 });
+  // Probe with clamp check (maxProbes: 10 clamped to 3)
+  const res = await lab.runTest3FastPath({ probeTimeoutMs: 1000, maxProbes: 10 });
   assert.equal(res.testId, 'test_3_fast_path');
-  assert.equal(res.probedPeersCount, 2);
-  assert.equal(res.responsiveCount, 2);
+  assert.ok(res.probedPeersCount <= 3);
+  assert.ok(res.responsiveCount <= 3);
   assert.ok(res.medianProbeRttMs !== null);
-  assert.equal(res.probeResults.length, 2);
+
+  // Live study with unexposed pingPeer reports unsupported_api rather than nonresponsive
+  const mockMesh = {
+    isConnected: true,
+    peers: new Map([['peer-1234567890abcdef', {}]]),
+    transport: { mesh: { pingPeer: undefined } }
+  };
+  const liveLab = new AdaptationLab({ mode: 'live_study', mesh: mockMesh });
+  const liveRes = await liveLab.runTest3FastPath({ maxProbes: 1 });
+  assert.equal(liveRes.probedPeersCount, 1);
+  assert.equal(liveRes.unsupportedCount, 1);
+  assert.equal(liveRes.nonresponsiveCount, 0);
+  assert.equal(liveRes.probeResults[0].status, 'unsupported_api');
 });
 
 // 5. Test 4: Dynamic Bandwidth & Backpressure Governor
@@ -116,9 +136,10 @@ await test('Test 4: Governor priority invariants (anchors and flushes NEVER drop
   assert.equal(inactivePass.pass, true);
 });
 
-// 6. Privacy Export Allowlist
-await test('Report export strictly omits hardware concurrency, RAM, and battery', async () => {
+// 6. Privacy Export Allowlist & Redaction
+await test('Report export strictly omits hardware concurrency, RAM, and battery, and redacts peer IDs', async () => {
   const lab = new AdaptationLab({ mode: 'offline_mock' });
+  await lab.runTest3FastPath({ maxProbes: 2 });
   const report = lab.exportReport();
 
   assert.ok(report.labVersion);
@@ -129,6 +150,15 @@ await test('Report export strictly omits hardware concurrency, RAM, and battery'
   assert.equal(report.platformSummary.hardwareConcurrency, undefined);
   assert.equal(report.platformSummary.deviceMemory, undefined);
   assert.equal(report.platformSummary.battery, undefined);
+
+  // Redaction check: peer IDs in test3 results must be redacted
+  const fastPathHistory = report.history.test3FastPath;
+  assert.ok(fastPathHistory.length > 0);
+  for (const record of fastPathHistory) {
+    for (const p of record.probeResults) {
+      assert.ok(p.peerId.length <= 9, `peerId '${p.peerId}' should be redacted to <= 9 chars`);
+    }
+  }
 });
 
 console.log('\n========================================');

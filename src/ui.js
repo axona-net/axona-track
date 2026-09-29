@@ -83,15 +83,15 @@ export class TrackUI {
           <!-- Peers Card -->
           <div class="glass-card metric-card">
             <div class="metric-header">
-              <span>Active Peers</span>
-              <span class="badge-tag cyan" id="webrtcBadge">0 WebRTC</span>
+              <span>Direct Mesh Peers</span>
+              <span class="badge-tag cyan" id="webrtcBadge">0 Direct</span>
             </div>
             <div class="metric-value">
               <span id="peerCountVal">0</span>
-              <span class="metric-unit">nodes</span>
+              <span class="metric-unit">peers</span>
             </div>
             <div class="metric-detail" id="peerDetail">
-              <span>Bridge:</span> <span class="badge-tag emerald" id="bridgeBadge">Connecting</span>
+              <span>Direct WebRTC: 0 · Bridge:</span> <span class="badge-tag emerald" id="bridgeBadge">Connecting</span>
             </div>
           </div>
 
@@ -711,8 +711,14 @@ export class TrackUI {
 
     const peerVal = document.getElementById('peerCountVal');
     const webrtcBadge = document.getElementById('webrtcBadge');
-    if (peerVal) peerVal.textContent = peerCount;
-    if (webrtcBadge) webrtcBadge.textContent = `${webrtcPeers} WebRTC`;
+    if (peerVal) peerVal.textContent = webrtcPeers;
+    if (webrtcBadge) webrtcBadge.textContent = `${webrtcPeers} Direct`;
+
+    const peerDetail = document.getElementById('peerDetail');
+    if (peerDetail) {
+      const span = peerDetail.querySelector('span:first-child');
+      if (span) span.textContent = `Direct WebRTC: ${webrtcPeers} · Bridge:`;
+    }
 
     const rttVal = document.getElementById('rttVal');
     if (rttVal) {

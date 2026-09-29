@@ -80,6 +80,17 @@ export class MeshClient {
 
       this._wireTransportListeners();
 
+      // Subscribe to app telemetry topic to mesh with other axona.track peers and obtain kernel topic roles
+      const topicDesc = { region: this.region, name: TELEMETRY_TOPIC };
+      try {
+        await this.peer.sub(topicDesc, (env) => {
+          this.onMessage(env);
+        }, { since: 'latest' });
+        console.log(`[axona.track] Subscribed to ${TELEMETRY_TOPIC} [region: ${this.region}]`);
+      } catch (err) {
+        console.warn(`[axona.track] Subscription to ${TELEMETRY_TOPIC} failed:`, err);
+      }
+
       this.onStatus('connected', `Meshed (${this.getPeerCount()} peers) · Node: ${this.nodeIdentity.id.slice(0, 8)}…`);
       return true;
     } catch (err) {
@@ -110,9 +121,8 @@ export class MeshClient {
       });
     }
 
-    // WebRTC Mesh Manager hooks
-    const webrtc = this.transport.webrtc;
-    const mesh = webrtc?.mesh;
+    // WebRTC Mesh Manager hooks (In CompositeTransport, mesh is at transport.mesh)
+    const mesh = this.transport.mesh || this.transport.webrtc?.mesh;
 
     if (mesh) {
       // 1. Mesh peer change events
@@ -132,8 +142,40 @@ export class MeshClient {
           p.lastSeen = Date.now();
           if (kind === 'recv' && typeof mesh.getLatency === 'function') {
             const lat = mesh.getLatency(peerId);
-            if (typeof lat === 'number' && lat >= 0) p.rtt = lat;
+            if (typeof lat === 'number' && lat >= 0) {
+              p.rtt = lat;
+              this._emitStats();
+            }
           }
+        }
+      });
+    }
+
+    // 4. Fallback onPeerBound and onPeerDied on composite transport
+    if (typeof this.transport.onPeerBound === 'function') {
+      this.transport.onPeerBound((nodeId, detail) => {
+        const id = (typeof nodeId === 'bigint') ? nodeId.toString(16) : String(nodeId || '');
+        if (id && !this.peers.has(id)) {
+          const now = Date.now();
+          const peerData = {
+            id,
+            state: 'open',
+            rtt: null,
+            candidateType: detail?.candidateType || null,
+            connectedAt: now,
+            lastSeen: now
+          };
+          this.peers.set(id, peerData);
+          this.onPeerAdded(peerData);
+          this._emitStats();
+        }
+      });
+    }
+    if (typeof this.transport.onPeerDied === 'function') {
+      this.transport.onPeerDied((nodeId) => {
+        const id = (typeof nodeId === 'bigint') ? nodeId.toString(16) : String(nodeId || '');
+        if (id && this.peers.has(id)) {
+          this._handlePeerLost(id, 'peer_died_transport');
         }
       });
     }
@@ -226,14 +268,23 @@ export class MeshClient {
 
   getRoleCounts() {
     let root = 0, backup = 0, child = 0;
+    // 1. Kernel-level pubsub roles from AxonaManager
+    if (this.peer?._axonaManager?.axonRoles) {
+      for (const r of this.peer._axonaManager.axonRoles.values()) {
+        if (r.isRoot) root++;
+        else if (r.nature === 'backup') backup++;
+        else child++;
+      }
+    }
+    // 2. Local test-duty roles
     for (const r of this.activeRoles.values()) {
       if (r.nature === 'root') root++;
       else if (r.nature === 'backup') backup++;
       else if (r.nature === 'child') child++;
     }
-    return { root, backup, child, total: this.activeRoles.size };
+    const total = root + backup + child;
+    return { root, backup, child, total };
   }
-
 
   /**
    * Publish telemetry payload to #axona-track
@@ -241,6 +292,16 @@ export class MeshClient {
    */
   async publishTelemetry(payload, handle = 'axona-track') {
     if (!this.peer || !this.author) return false;
+
+    // Filter via active backpressure governor if registered
+    if (this.lab) {
+      const decision = this.lab.filterOutboundTelemetry(payload);
+      if (!decision.pass) {
+        console.log(`[axona.track] Outbound telemetry filtered by governor (${decision.reason})`);
+        return false;
+      }
+    }
+
     try {
       const topicDesc = { region: this.region, name: TELEMETRY_TOPIC };
       const note = payload?.note || payload?.summary || `[${payload?.type || 'telemetry'}] ${payload?.deviceName || handle}`;

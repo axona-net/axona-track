@@ -1,4 +1,4 @@
-// src/lab.js — Adaptation Test Harness for axona.track (v0.2.0)
+// src/lab.js — Adaptation Test Harness for axona.track (v0.2.1)
 // Implements client-side empirical simulations for:
 // 1. Pre-freeze role relinquish handoff
 // 2. Tiered mobile grace-period profiler
@@ -7,8 +7,14 @@
 
 import { detectPlatform } from './id.js';
 import { APP_VERSION, KERNEL_VERSION } from './version.js';
+import { peekPreFreezeSnapshot } from './storage.js';
 
-export const LAB_VERSION = '0.2.0';
+export const LAB_VERSION = '0.2.1';
+
+function redactPeerId(id) {
+  if (typeof id !== 'string') return '';
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
 
 export class AdaptationLab {
   constructor({ mesh, lifecycle, telemetry, mode = 'offline_mock', onUpdate }) {
@@ -67,16 +73,20 @@ export class AdaptationLab {
       timeoutMs,
       transportAtDispatch,
       elapsedMs: 0,
-      outcome: 'pending', // 'settled_resolved' | 'settled_rejected' | 'interrupted_timeout'
+      outcome: 'in_flight', // Preserves denominator even if aborted/terminated
       error: null
     };
+
+    // Register in history immediately so aborted/cancelled runs stay in denominator
+    this.history.test1Handoff.unshift(record);
+    if (this.history.test1Handoff.length > 50) this.history.test1Handoff.pop();
+    this._notify();
 
     try {
       if (this.mode === 'offline_mock') {
         // Deterministic simulated execution (15ms - 45ms synthetic dispatch latency)
         const simLatency = Math.min(timeoutMs, 25);
         await new Promise((r) => setTimeout(r, simLatency));
-        record.elapsedMs = Date.now() - startedAt;
         record.outcome = 'settled_resolved';
       } else {
         // Live study: publish role relinquish intent to ephemeral test topic
@@ -104,22 +114,20 @@ export class AdaptationLab {
         );
 
         await Promise.race([pubPromise, timeoutPromise]);
-        record.elapsedMs = Date.now() - startedAt;
         record.outcome = 'settled_resolved';
       }
     } catch (err) {
-      record.elapsedMs = Date.now() - startedAt;
-      if (err.message === 'dispatch_timeout' || record.elapsedMs >= timeoutMs) {
+      if (err.message === 'dispatch_timeout' || (Date.now() - startedAt) >= timeoutMs) {
         record.outcome = 'interrupted_timeout';
       } else {
         record.outcome = 'settled_rejected';
       }
       record.error = err.message;
+    } finally {
+      record.elapsedMs = Date.now() - startedAt;
+      this._notify();
     }
 
-    this.history.test1Handoff.unshift(record);
-    if (this.history.test1Handoff.length > 50) this.history.test1Handoff.pop();
-    this._notify();
     return record;
   }
 
@@ -140,38 +148,49 @@ export class AdaptationLab {
       intervalMs = lastSleep;
     }
 
-    // Determine duration tier
-    let tier = 'tier_1_micropause'; // < 10s
+    // Determine neutral duration tier
+    let tier = 'tier_under_10s'; // < 10s
     if (intervalMs >= 300000) {
-      tier = 'tier_4_deep_freeze'; // > 5m
+      tier = 'tier_over_5m'; // > 5m
     } else if (intervalMs >= 60000) {
-      tier = 'tier_3_medium_suspension'; // 1m - 5m
+      tier = 'tier_1m_to_5m'; // 1m - 5m
     } else if (intervalMs >= 10000) {
-      tier = 'tier_2_screen_lock'; // 10s - 60s
+      tier = 'tier_10s_to_60s'; // 10s - 60s
     }
 
-    // Determine peer counts
+    // Determine peer counts & baseline
     let hasBaseline = true;
     if (preCount === null) {
-      preCount = this.mesh?.peers?.size ?? 0;
-      if (preCount === 0 && this.mode === 'offline_mock') {
+      if (this.mode === 'offline_mock') {
         preCount = 4; // Mock baseline
+      } else {
+        // Read actual baseline from pre-freeze snapshot
+        const snapshot = peekPreFreezeSnapshot();
+        if (snapshot && Array.isArray(snapshot.peers)) {
+          preCount = snapshot.peers.length;
+        } else {
+          hasBaseline = false;
+          preCount = null;
+        }
       }
     }
 
     if (survivingCount === null) {
       if (this.mode === 'offline_mock') {
-        // Mock survival curve based on tier
-        if (tier === 'tier_1_micropause') survivingCount = preCount;
-        else if (tier === 'tier_2_screen_lock') survivingCount = Math.max(0, preCount - 1);
-        else if (tier === 'tier_3_medium_suspension') survivingCount = Math.floor(preCount * 0.5);
+        const base = preCount ?? 4;
+        if (tier === 'tier_under_10s') survivingCount = base;
+        else if (tier === 'tier_10s_to_60s') survivingCount = Math.max(0, base - 1);
+        else if (tier === 'tier_1m_to_5m') survivingCount = Math.floor(base * 0.5);
         else survivingCount = 0;
       } else {
         survivingCount = this.mesh?.peers?.size ?? 0;
       }
     }
 
-    const retentionRatio = preCount > 0 ? (survivingCount / preCount) : null;
+    const retentionRatio = (hasBaseline && preCount !== null && preCount > 0)
+      ? (survivingCount / preCount)
+      : (hasBaseline && preCount === 0 ? 1.0 : null);
+
     const retentionState = !hasBaseline
       ? 'baseline_unavailable'
       : (survivingCount > 0 ? 'cached_peer_ids_retained' : 'no_cached_peer_ids_retained');
@@ -203,10 +222,16 @@ export class AdaptationLab {
     const attemptId = `fastpath-${Math.random().toString(36).slice(2, 8)}`;
     const bridgeConnectedAtStart = this.mesh?.isConnected || false;
 
-    // Collect target peers to probe (up to maxProbes cap)
-    const targetPeerIds = Array.from(this.mesh?.peers?.keys() || []).slice(0, maxProbes);
+    // Clamp maxProbes strictly <= 3 and >= 1
+    const clampedMaxProbes = Math.min(3, Math.max(1, typeof maxProbes === 'number' ? maxProbes : 3));
+
+    // Collect target peers to probe (up to clampedMaxProbes cap)
+    const targetPeerIds = Array.from(this.mesh?.peers?.keys() || []).slice(0, clampedMaxProbes);
     if (targetPeerIds.length === 0 && this.mode === 'offline_mock') {
       targetPeerIds.push('mock-peer-alpha', 'mock-peer-beta');
+      if (targetPeerIds.length > clampedMaxProbes) {
+        targetPeerIds.length = clampedMaxProbes;
+      }
     }
 
     const probeResults = [];
@@ -221,29 +246,23 @@ export class AdaptationLab {
       }
     } else {
       // Live active probing of existing WebRTC channels
-      const webrtc = this.mesh?.transport?.webrtc;
-      const meshMgr = webrtc?.mesh;
+      const meshMgr = this.mesh?.transport?.mesh || this.mesh?.transport?.webrtc?.mesh;
 
       const probePromises = targetPeerIds.map(async (peerId) => {
         const t0 = performance.now();
+        if (!meshMgr || typeof meshMgr.pingPeer !== 'function') {
+          // If pingPeer API is unexposed, explicitly classify as unsupported_api
+          // Do NOT conflate with nonresponsive or use static latency fallback
+          return { peerId, status: 'unsupported_api', rttMs: null };
+        }
         try {
-          if (meshMgr && typeof meshMgr.pingPeer === 'function') {
-            await Promise.race([
-              meshMgr.pingPeer(peerId),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('probe_timeout')), probeTimeoutMs))
-            ]);
-            const rttMs = Math.round(performance.now() - t0);
-            rtts.push(rttMs);
-            return { peerId, status: 'responsive', rttMs };
-          } else {
-            // Fallback: check stored latency if ping API unexposed
-            const lat = meshMgr?.getLatency?.(peerId);
-            if (typeof lat === 'number' && lat >= 0) {
-              rtts.push(lat);
-              return { peerId, status: 'responsive', rttMs: lat };
-            }
-            return { peerId, status: 'unprobed_api_unsupported', rttMs: null };
-          }
+          await Promise.race([
+            meshMgr.pingPeer(peerId),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('probe_timeout')), probeTimeoutMs))
+          ]);
+          const rttMs = Math.round(performance.now() - t0);
+          rtts.push(rttMs);
+          return { peerId, status: 'responsive', rttMs };
         } catch {
           return { peerId, status: 'nonresponsive', rttMs: null };
         }
@@ -256,6 +275,8 @@ export class AdaptationLab {
     rtts.sort((a, b) => a - b);
     const medianRtt = rtts.length > 0 ? rtts[Math.floor(rtts.length / 2)] : null;
     const responsiveCount = probeResults.filter((p) => p.status === 'responsive').length;
+    const nonresponsiveCount = probeResults.filter((p) => p.status === 'nonresponsive').length;
+    const unsupportedCount = probeResults.filter((p) => p.status === 'unsupported_api').length;
 
     const record = {
       testId: 'test_3_fast_path',
@@ -264,7 +285,8 @@ export class AdaptationLab {
       bridgeConnectedAtStart,
       probedPeersCount: targetPeerIds.length,
       responsiveCount,
-      nonresponsiveCount: targetPeerIds.length - responsiveCount,
+      nonresponsiveCount,
+      unsupportedCount,
       medianProbeRttMs: medianRtt,
       probeResults,
       probeTimeoutMs,
@@ -365,7 +387,13 @@ export class AdaptationLab {
       history: {
         test1Handoff: this.history.test1Handoff.slice(0, 10),
         test2Grace: this.history.test2Grace.slice(0, 10),
-        test3FastPath: this.history.test3FastPath.slice(0, 10)
+        test3FastPath: this.history.test3FastPath.slice(0, 10).map((r) => ({
+          ...r,
+          probeResults: r.probeResults?.map((p) => ({
+            ...p,
+            peerId: redactPeerId(p.peerId)
+          }))
+        }))
       }
     };
   }

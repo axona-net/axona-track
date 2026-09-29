@@ -358,6 +358,7 @@ export async function clearOfflineOutbox() {
  */
 export function savePreFreezeSnapshot(snapshot) {
   try {
+    if (typeof localStorage === 'undefined') return;
     const payload = {
       ...snapshot,
       timestamp: Date.now()
@@ -373,6 +374,7 @@ export function savePreFreezeSnapshot(snapshot) {
  */
 export function popPreFreezeSnapshot() {
   try {
+    if (typeof localStorage === 'undefined') return null;
     const storage = getStorage();
     const raw = storage.getItem(SNAPSHOT_KEY);
     if (!raw) return null;
@@ -389,6 +391,7 @@ export function popPreFreezeSnapshot() {
  */
 export function peekPreFreezeSnapshot() {
   try {
+    if (typeof localStorage === 'undefined') return null;
     const raw = getStorage().getItem(SNAPSHOT_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
@@ -498,6 +501,8 @@ export function getSessionMetrics() {
 
 // Perform initial pruning on module load
 try {
-  pruneStorage();
-  localStorage.removeItem('axona.track.device_uuid');
+  if (typeof localStorage !== 'undefined') {
+    pruneStorage().catch(() => {});
+    localStorage.removeItem('axona.track.device_uuid');
+  }
 } catch {}
