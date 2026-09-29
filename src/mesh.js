@@ -314,11 +314,12 @@ export class MeshClient {
     console.log(`[axona.track] Executing post-wake recovery (sleep: ${sleepDurationMs}ms)...`);
 
     // 1. Passive pre-intervention observation
+    const hasPreBaseline = !!(preFreezeSnapshot?.meshSnapshot?.peerIds || preFreezeSnapshot?.peerIds);
     const prePeerIds = new Set(preFreezeSnapshot?.meshSnapshot?.peerIds || preFreezeSnapshot?.peerIds || []);
     const immediateBridgeOpen = this.isConnected;
     const immediatePeers = Array.from(this.peers.keys());
     const survivingPeerIds = immediatePeers.filter((id) => prePeerIds.has(id));
-    const sameSocketsObserved = (survivingPeerIds.length > 0);
+    const cachedIdsRetained = (survivingPeerIds.length > 0);
 
     // 2. Measure actual reconnect latency
     const t0 = performance.now();
@@ -332,23 +333,30 @@ export class MeshClient {
       await new Promise((r) => setTimeout(r, 100));
     }
     const measuredReconnectLatencyMs = Math.round(performance.now() - t0);
+    const waitOutcome = immediateBridgeOpen ? 'already_open' : this.isConnected ? 'reconnected_within_deadline' : 'timed_out';
 
     // Allow mesh brief settling window
     await new Promise((r) => setTimeout(r, 500));
 
     const settledPeersCount = this.peers.size;
     const prePeersCount = prePeerIds.size;
-    const peersLostCount = Math.max(0, prePeersCount - survivingPeerIds.length);
+    const peersLostCount = hasPreBaseline ? Math.max(0, prePeersCount - survivingPeerIds.length) : null;
+
+    let continuityState = 'baseline_unavailable';
+    if (hasPreBaseline) {
+      continuityState = cachedIdsRetained ? 'cached_peer_ids_retained' : 'no_cached_peer_ids_retained';
+    }
 
     return {
       passiveAudit: {
+        hasPreBaseline,
         bridgeOpenAtWake: immediateBridgeOpen,
         immediatePeersCount: immediatePeers.length,
         survivingPeerIds,
-        continuityState: sameSocketsObserved ? 'cached_peer_ids_retained' : 'no_cached_peer_ids_retained'
+        continuityState
       },
       reconnectWaitElapsedMs: measuredReconnectLatencyMs,
-      reconnectOutcome: immediateBridgeOpen ? 'already_open' : this.isConnected ? 'reconnected' : 'timed_out',
+      waitOutcome,
       settledBridgeConnected: this.isConnected,
       settledPeersCount,
       prePeersCount,

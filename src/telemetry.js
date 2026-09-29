@@ -47,8 +47,9 @@ export class TelemetryService {
     const snapshot = this.mesh.captureSnapshot();
     const roleCounts = this.mesh.getRoleCounts();
 
+    const isPeriodic = trigger === 'periodic_30m';
     const payload = {
-      note: `30m Anchor Heartbeat: ${snapshot.peerCount} peers direct · uptime ${Math.round(uptimeSec / 60)}m`,
+      note: `Heartbeat (${trigger}): ${snapshot.webrtcPeersCount} direct WebRTC + ${snapshot.bridgeConnected ? '1 bridge' : '0 bridge'} (total ${snapshot.peerCount}) · uptime ${Math.round(uptimeSec / 60)}m`,
       v: 1,
       appVersion: APP_VERSION,
       kernelVersion: KERNEL_VERSION,
@@ -82,8 +83,8 @@ export class TelemetryService {
 
     appendLocalEvent({
       category: 'heartbeat',
-      title: `30m Anchor Heartbeat`,
-      detail: `${snapshot.peerCount} peers · ${snapshot.medianRtt ? snapshot.medianRtt + 'ms RTT' : 'direct'}`,
+      title: isPeriodic ? `30m Anchor Heartbeat` : `Manual Heartbeat Pulse`,
+      detail: `${snapshot.webrtcPeersCount} direct WebRTC · ${snapshot.bridgeConnected ? 'Bridge open' : 'Bridge disconnected'} · ${snapshot.medianRtt != null ? snapshot.medianRtt + 'ms RTT' : 'RTT unknown'}`,
       payload
     });
 
@@ -349,7 +350,7 @@ export class TelemetryService {
             observedIntervalMs,
             passiveAudit: recoveryResult.passiveAudit,
             reconnectWaitElapsedMs: recoveryResult.reconnectWaitElapsedMs,
-            reconnectOutcome: recoveryResult.reconnectOutcome,
+            waitOutcome: recoveryResult.waitOutcome,
             settledBridgeConnected: recoveryResult.settledBridgeConnected,
             peersBeforeSleep: prePeers,
             peersAfterWake: currentPeers,
@@ -379,7 +380,7 @@ export class TelemetryService {
           appendLocalEvent({
             category: 'recovery',
             title: `Wake Recovery & Offline Journal Flushed (${Math.round(observedIntervalMs / 1000)}s interval)`,
-            detail: `Flushed ${heldIds.length} events · Outcome: ${recoveryResult.reconnectOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
+            detail: `Flushed ${heldIds.length} events · Wait: ${recoveryResult.waitOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Settled bridge: ${recoveryResult.settledBridgeConnected ? 'open' : 'disconnected'} · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
             payload
           });
           console.log(`[axona.track] Successfully published recovery flush and acked ${heldIds.length} held events.`);
@@ -387,7 +388,7 @@ export class TelemetryService {
           appendLocalEvent({
             category: 'recovery',
             title: `Wake Recovery Flush Retained (${heldIds.length} events)`,
-            detail: `Publish unconfirmed · Retained in outbox · Outcome: ${recoveryResult.reconnectOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms)`,
+            detail: `Publish unconfirmed · Retained in outbox · Wait: ${recoveryResult.waitOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
             payload
           });
           console.warn(`[axona.track] Recovery flush publish unconfirmed; retaining ${heldIds.length} events in outbox for subsequent retry.`);
