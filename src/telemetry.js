@@ -182,7 +182,7 @@ export class TelemetryService {
       appendLocalEvent({
         category: 'churn',
         title: `Peer Connected: ${peer.id.slice(0, 8)}…`,
-        detail: `Type: ${peer.candidateType} · RTT: ${peer.rtt != null ? peer.rtt + 'ms' : 'probing'}`,
+        detail: `Type: ${peer.candidateType || 'unreported'} · RTT: ${peer.rtt != null ? peer.rtt + 'ms' : 'unknown'}`,
         payload
       });
 
@@ -348,7 +348,8 @@ export class TelemetryService {
           recovery: {
             observedIntervalMs,
             passiveAudit: recoveryResult.passiveAudit,
-            reconnectLatencyMs: recoveryResult.reconnectLatencyMs,
+            reconnectWaitElapsedMs: recoveryResult.reconnectWaitElapsedMs,
+            reconnectOutcome: recoveryResult.reconnectOutcome,
             settledBridgeConnected: recoveryResult.settledBridgeConnected,
             peersBeforeSleep: prePeers,
             peersAfterWake: currentPeers,
@@ -378,7 +379,7 @@ export class TelemetryService {
           appendLocalEvent({
             category: 'recovery',
             title: `Wake Recovery & Offline Journal Flushed (${Math.round(observedIntervalMs / 1000)}s interval)`,
-            detail: `Flushed ${heldIds.length} events · Reconnect: ${recoveryResult.reconnectLatencyMs}ms · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
+            detail: `Flushed ${heldIds.length} events · Outcome: ${recoveryResult.reconnectOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
             payload
           });
           console.log(`[axona.track] Successfully published recovery flush and acked ${heldIds.length} held events.`);
@@ -386,7 +387,7 @@ export class TelemetryService {
           appendLocalEvent({
             category: 'recovery',
             title: `Wake Recovery Flush Retained (${heldIds.length} events)`,
-            detail: `Publish unconfirmed · Retained in outbox · Reconnect: ${recoveryResult.reconnectLatencyMs}ms`,
+            detail: `Publish unconfirmed · Retained in outbox · Outcome: ${recoveryResult.reconnectOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms)`,
             payload
           });
           console.warn(`[axona.track] Recovery flush publish unconfirmed; retaining ${heldIds.length} events in outbox for subsequent retry.`);

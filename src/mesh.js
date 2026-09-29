@@ -155,7 +155,7 @@ export class MeshClient {
           id,
           state: p.state || 'open',
           rtt: (typeof p.latency === 'number' && p.latency >= 0) ? p.latency : null,
-          candidateType: p.candidateType || 'srflx',
+          candidateType: p.candidateType || null,
           connectedAt: now,
           lastSeen: now
         };
@@ -271,12 +271,14 @@ export class MeshClient {
 
     const topicDesc = { region: this.region, name: this.testTopic };
     if (this.testDutyActive) {
-      this.activeRoles.set(this.testTopic, { nature: 'backup', enteredAt: Date.now() });
       try {
         await this.peer.sub(topicDesc, () => {}, { since: 'all' });
+        this.activeRoles.set(this.testTopic, { nature: 'backup', enteredAt: Date.now(), isSimulatedTestDuty: true });
         console.log(`[axona.track] Test duty armed on ${this.testTopic}`);
       } catch (err) {
         console.warn('[axona.track] Failed to arm test duty:', err);
+        this.testDutyActive = false;
+        this.activeRoles.delete(this.testTopic);
       }
     } else {
       this.activeRoles.delete(this.testTopic);
@@ -343,9 +345,10 @@ export class MeshClient {
         bridgeOpenAtWake: immediateBridgeOpen,
         immediatePeersCount: immediatePeers.length,
         survivingPeerIds,
-        continuityState: sameSocketsObserved ? 'observed_identical_ids' : 'sockets_severed_or_unknown'
+        continuityState: sameSocketsObserved ? 'cached_peer_ids_retained' : 'no_cached_peer_ids_retained'
       },
-      reconnectLatencyMs: measuredReconnectLatencyMs,
+      reconnectWaitElapsedMs: measuredReconnectLatencyMs,
+      reconnectOutcome: immediateBridgeOpen ? 'already_open' : this.isConnected ? 'reconnected' : 'timed_out',
       settledBridgeConnected: this.isConnected,
       settledPeersCount,
       prePeersCount,
