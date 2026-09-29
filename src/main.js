@@ -8,6 +8,7 @@ import { TelemetryService } from './telemetry.js';
 import { TrackUI } from './ui.js';
 import { appendLocalEvent } from './storage.js';
 import { initPWAUpdater } from './updater.js';
+import { AdaptationLab } from './lab.js';
 
 let updater = null;
 
@@ -71,6 +72,14 @@ async function initApp() {
     }
   });
 
+  // Initialize Adaptation Lab (v0.2.0)
+  const lab = new AdaptationLab({
+    mesh,
+    lifecycle,
+    telemetry,
+    mode: 'offline_mock'
+  });
+
   // Initialize UI
   ui = new TrackUI({
     container,
@@ -78,7 +87,8 @@ async function initApp() {
     platform,
     mesh,
     lifecycle,
-    telemetry
+    telemetry,
+    lab
   });
 
   // Initialize PWA Auto-Updater Lifecycle

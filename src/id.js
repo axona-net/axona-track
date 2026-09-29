@@ -16,9 +16,10 @@ const ANIMALS = [
  * Detect OS / platform
  */
 export function detectPlatform() {
-  const ua = navigator.userAgent || '';
+  const ua = (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
   let os = 'Unknown OS';
-  if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
+  const hasTouch = typeof navigator !== 'undefined' && (navigator.maxTouchPoints > 1);
+  if (/iPad|iPhone|iPod/.test(ua) || (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && hasTouch)) {
     os = 'iOS';
   } else if (/Android/.test(ua)) {
     os = 'Android';
@@ -45,27 +46,27 @@ export function detectPlatform() {
   }
 
   // Standalone PWA detection
-  const isStandalone = (
+  const isStandalone = typeof window !== 'undefined' && (
     window.matchMedia?.('(display-mode: standalone)')?.matches ||
     window.matchMedia?.('(display-mode: fullscreen)')?.matches ||
-    window.navigator.standalone === true ||
-    document.referrer.includes('android-app://')
+    window.navigator?.standalone === true ||
+    (typeof document !== 'undefined' && document.referrer?.includes('android-app://'))
   );
 
   return {
     os,
     browser,
-    isStandalone,
+    isStandalone: !!isStandalone,
     displayMode: isStandalone ? 'standalone-pwa' : 'browser-tab',
     userAgent: ua,
-    hardwareConcurrency: navigator.hardwareConcurrency || null,
-    deviceMemory: navigator.deviceMemory || null,
-    screen: {
+    hardwareConcurrency: (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : null) || null,
+    deviceMemory: (typeof navigator !== 'undefined' ? navigator.deviceMemory : null) || null,
+    screen: typeof window !== 'undefined' && window.screen ? {
       width: window.screen.width,
       height: window.screen.height,
       pixelRatio: window.devicePixelRatio || 1
-    },
-    touchSupported: 'ontouchstart' in window || navigator.maxTouchPoints > 0
+    } : null,
+    touchSupported: typeof window !== 'undefined' ? ('ontouchstart' in window || (navigator?.maxTouchPoints > 0)) : false
   };
 }
 

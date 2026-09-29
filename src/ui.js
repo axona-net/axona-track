@@ -5,13 +5,14 @@ import { APP_VERSION, KERNEL_VERSION } from './version.js';
 import QRCode from 'qrcode';
 
 export class TrackUI {
-  constructor({ container, deviceId, platform, mesh, lifecycle, telemetry }) {
+  constructor({ container, deviceId, platform, mesh, lifecycle, telemetry, lab }) {
     this.container = container;
     this.deviceId = deviceId;
     this.platform = platform;
     this.mesh = mesh;
     this.lifecycle = lifecycle;
     this.telemetry = telemetry;
+    this.lab = lab;
 
     this.currentFilter = 'all';
     this.stateStartTime = Date.now();
@@ -201,6 +202,75 @@ export class TrackUI {
             <button class="btn" id="btnClearLog">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               Clear Log
+            </button>
+          </div>
+        </section>
+
+        <!-- Mesh Adaptation Lab (v0.2.0) -->
+        <section class="glass-card lab-section">
+          <div class="lab-header">
+            <div class="section-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 2v7.31L4.62 17.5A2 2 0 0 0 6.34 20h11.32a2 2 0 0 0 1.72-2.5L14 9.31V2"></path>
+              </svg>
+              <span>Mesh Adaptation Lab (Simulations & Studies)</span>
+            </div>
+            <div class="lab-mode-switch">
+              <button class="lab-mode-btn active" id="btnModeOffline">Offline Mock</button>
+              <button class="lab-mode-btn" id="btnModeLive">Live Study</button>
+            </div>
+          </div>
+
+          <div class="lab-grid">
+            <!-- Test 1: Handoff -->
+            <div class="lab-card">
+              <div class="lab-card-title">
+                <span>1. Pre-Freeze Handoff</span>
+                <span class="badge-tag violet" id="labT1Status">Ready</span>
+              </div>
+              <div class="lab-card-desc">Simulate pre-freeze role handoff intent dispatch before OS freeze.</div>
+              <div class="lab-card-metrics" id="labT1Metrics">Runs: 0 · Last: --</div>
+              <button class="btn btn-cyan btn-sm" id="btnRunLabT1" style="font-size: 0.75rem; padding: 6px 10px;">Run Handoff Test</button>
+            </div>
+
+            <!-- Test 2: Grace Profiler -->
+            <div class="lab-card">
+              <div class="lab-card-title">
+                <span>2. Grace Profiler</span>
+                <span class="badge-tag amber" id="labT2Status">Ready</span>
+              </div>
+              <div class="lab-card-desc">Classify pause intervals (&lt;10s, 10-60s, 1-5m, &gt;5m) and retention.</div>
+              <div class="lab-card-metrics" id="labT2Metrics">Profile: -- · Ratio: --</div>
+              <button class="btn btn-amber btn-sm" id="btnRunLabT2" style="font-size: 0.75rem; padding: 6px 10px;">Profile Retention</button>
+            </div>
+
+            <!-- Test 3: Fast-Path Probes -->
+            <div class="lab-card">
+              <div class="lab-card-title">
+                <span>3. Fast-Path Probes</span>
+                <span class="badge-tag emerald" id="labT3Status">Ready</span>
+              </div>
+              <div class="lab-card-desc">Active WebRTC channel ping probe (capped at 3 cached peers).</div>
+              <div class="lab-card-metrics" id="labT3Metrics">Responsive: -- · RTT: --</div>
+              <button class="btn btn-emerald btn-sm" id="btnRunLabT3" style="font-size: 0.75rem; padding: 6px 10px;">Probe Cached Channels</button>
+            </div>
+
+            <!-- Test 4: Backpressure Governor -->
+            <div class="lab-card">
+              <div class="lab-card-title">
+                <span>4. Backpressure</span>
+                <span class="badge-tag cyan" id="labT4Status">Inactive</span>
+              </div>
+              <div class="lab-card-desc">Throttle auxiliary telemetry during link degradation (heartbeats protected).</div>
+              <div class="lab-card-metrics" id="labT4Metrics">Passed: 0 · Coalesced: 0</div>
+              <button class="btn btn-sm" id="btnToggleLabGovernor" style="font-size: 0.75rem; padding: 6px 10px;">Arm Governor</button>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
+            <button class="btn" id="btnExportLab" style="font-size: 0.75rem; padding: 6px 12px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              Export Lab Report (Privacy-Safe)
             </button>
           </div>
         </section>
@@ -411,6 +481,113 @@ export class TrackUI {
         this.showToast('Link copied to clipboard!');
       }
     });
+
+    // Adaptation Lab Handlers (v0.2.0)
+    if (this.lab) {
+      const btnModeOffline = document.getElementById('btnModeOffline');
+      const btnModeLive = document.getElementById('btnModeLive');
+
+      btnModeOffline?.addEventListener('click', () => {
+        this.lab.setMode('offline_mock');
+        btnModeOffline.classList.add('active');
+        btnModeLive?.classList.remove('active');
+        this.showToast('Lab mode: Offline Mock (Sandbox)');
+      });
+
+      btnModeLive?.addEventListener('click', () => {
+        this.lab.setMode('live_study');
+        btnModeLive.classList.add('active');
+        btnModeOffline?.classList.remove('active');
+        this.showToast('Lab mode: Live Study (Manual bounded)');
+      });
+
+      // Test 1: Handoff
+      document.getElementById('btnRunLabT1')?.addEventListener('click', async () => {
+        const statusEl = document.getElementById('labT1Status');
+        const metricsEl = document.getElementById('labT1Metrics');
+        if (statusEl) {
+          statusEl.className = 'badge-tag amber';
+          statusEl.textContent = 'Running…';
+        }
+        const res = await this.lab.runTest1Handoff();
+        if (statusEl) {
+          statusEl.className = `badge-tag ${res.outcome === 'settled_resolved' ? 'emerald' : 'rose'}`;
+          statusEl.textContent = res.outcome;
+        }
+        if (metricsEl) {
+          metricsEl.textContent = `Runs: ${this.lab.history.test1Handoff.length} · ${res.elapsedMs}ms (${res.transportAtDispatch})`;
+        }
+        this.showToast(`Test 1 Handoff: ${res.outcome} (${res.elapsedMs}ms)`);
+      });
+
+      // Test 2: Grace Profiler
+      document.getElementById('btnRunLabT2')?.addEventListener('click', () => {
+        const statusEl = document.getElementById('labT2Status');
+        const metricsEl = document.getElementById('labT2Metrics');
+        const res = this.lab.runTest2GracePeriod();
+        if (statusEl) {
+          statusEl.className = 'badge-tag emerald';
+          statusEl.textContent = res.tier.replace(/_/g, ' ');
+        }
+        if (metricsEl) {
+          metricsEl.textContent = `Retention: ${res.survivingPeersCount}/${res.prePeersCount} (${Math.round((res.retentionRatio || 0) * 100)}%) · ${Math.round(res.observedIntervalMs / 1000)}s`;
+        }
+        this.showToast(`Test 2 Grace: ${res.tier} · ${res.retentionState}`);
+      });
+
+      // Test 3: Fast-Path Probes
+      document.getElementById('btnRunLabT3')?.addEventListener('click', async () => {
+        const statusEl = document.getElementById('labT3Status');
+        const metricsEl = document.getElementById('labT3Metrics');
+        if (statusEl) {
+          statusEl.className = 'badge-tag amber';
+          statusEl.textContent = 'Probing…';
+        }
+        const res = await this.lab.runTest3FastPath();
+        if (statusEl) {
+          statusEl.className = `badge-tag ${res.responsiveCount > 0 ? 'emerald' : 'rose'}`;
+          statusEl.textContent = `${res.responsiveCount}/${res.probedPeersCount} Alive`;
+        }
+        if (metricsEl) {
+          metricsEl.textContent = `Median RTT: ${res.medianProbeRttMs !== null ? res.medianProbeRttMs + 'ms' : 'none'} · Probed: ${res.probedPeersCount}`;
+        }
+        this.showToast(`Test 3 Active Probe: ${res.responsiveCount}/${res.probedPeersCount} responded`);
+      });
+
+      // Test 4: Backpressure Governor Toggle
+      document.getElementById('btnToggleLabGovernor')?.addEventListener('click', () => {
+        const active = this.lab.toggleGovernor();
+        const btn = document.getElementById('btnToggleLabGovernor');
+        const statusEl = document.getElementById('labT4Status');
+        const metricsEl = document.getElementById('labT4Metrics');
+        if (btn) {
+          btn.textContent = active ? 'Disarm Governor' : 'Arm Governor';
+          btn.className = `btn btn-sm ${active ? 'btn-primary' : ''}`;
+        }
+        if (statusEl) {
+          statusEl.className = `badge-tag ${active ? 'emerald' : 'cyan'}`;
+          statusEl.textContent = active ? 'ARMED' : 'Inactive';
+        }
+        if (metricsEl) {
+          const stats = this.lab.getGovernorStats();
+          metricsEl.textContent = `Passed: ${stats.passedCount} · Coalesced: ${stats.coalescedCount} · Suppressed: ${stats.suppressedCount}`;
+        }
+        this.showToast(`Backpressure governor: ${active ? 'ARMED (throttled)' : 'RESTORED'}`);
+      });
+
+      // Export Lab Report (Privacy-Safe)
+      document.getElementById('btnExportLab')?.addEventListener('click', () => {
+        const report = this.lab.exportReport();
+        const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `axona-track-adaptation-lab-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.showToast('Privacy-safe lab report exported');
+      });
+    }
 
     // Cross-tab synchronization: re-render event list when another window writes to storage
     window.addEventListener('storage', (e) => {
