@@ -1,15 +1,16 @@
-// src/lab.js — Adaptation Test Harness for axona.track (v0.2.1)
+// src/lab.js — Adaptation Test Harness for axona.track (v0.3.0)
 // Implements client-side empirical simulations for:
 // 1. Pre-freeze role relinquish handoff
 // 2. Tiered mobile grace-period profiler
 // 3. Fast-path active WebRTC channel probing
 // 4. Dynamic bandwidth backpressure governor
+// 5. Dynamic mesh degree scaling & stress testing
 
 import { detectPlatform } from './id.js';
 import { APP_VERSION, KERNEL_VERSION } from './version.js';
 import { peekPreFreezeSnapshot } from './storage.js';
 
-export const LAB_VERSION = '0.2.1';
+export const LAB_VERSION = '0.3.0';
 
 function redactPeerId(id) {
   if (typeof id !== 'string') return '';
@@ -29,7 +30,8 @@ export class AdaptationLab {
       test1Handoff: [],
       test2Grace: [],
       test3FastPath: [],
-      test4Backpressure: []
+      test4Backpressure: [],
+      test5MeshScale: []
     };
 
     // Backpressure governor state
@@ -362,6 +364,191 @@ export class AdaptationLab {
   }
 
   // =========================================================================
+  // TEST 5: Dynamic Mesh Scaling & Connection Set Stress Test
+  // =========================================================================
+  async runTest5MeshScale({ cycleIntervalSec = 4, lowTarget = 3, highTarget = 15, onProgress = () => {} } = {}) {
+    const startedAt = Date.now();
+    const attemptId = `scale-${Math.random().toString(36).slice(2, 8)}`;
+
+    let batteryStart = null;
+    let batteryChargingStart = null;
+    if (typeof navigator !== 'undefined' && typeof navigator.getBattery === 'function') {
+      try {
+        const b = await navigator.getBattery();
+        batteryStart = Math.round(b.level * 100);
+        batteryChargingStart = b.charging;
+      } catch {}
+    }
+
+    const baselinePeers = this.mesh?.peers?.size ?? (this.mode === 'offline_mock' ? 6 : 0);
+    const baselineRtt = this.mesh?.getMedianRtt?.() ?? (this.mode === 'offline_mock' ? 22 : null);
+
+    const record = {
+      testId: 'test_5_mesh_scale',
+      attemptId,
+      mode: this.mode,
+      startedAt,
+      status: 'in_progress',
+      phase: 'baseline',
+      baselinePeers,
+      peakPeers: baselinePeers,
+      settledPeers: baselinePeers,
+      medianRttBaseline: baselineRtt,
+      medianRttPeak: null,
+      medianRttSettled: null,
+      maxEventLoopLagMs: 0,
+      batteryStart,
+      batteryEnd: null,
+      batteryDelta: null,
+      elapsedMs: 0,
+      samples: []
+    };
+
+    this.history.test5MeshScale.unshift(record);
+    if (this.history.test5MeshScale.length > 50) this.history.test5MeshScale.pop();
+    this._notify();
+
+    try {
+      if (this.mode === 'offline_mock') {
+        // Deterministic mock simulation across phases
+        record.phase = 'scaling_up';
+        onProgress({ phase: 'scaling_up', progress: 0.25, currentPeers: baselinePeers });
+        await new Promise((r) => setTimeout(r, 40));
+
+        // Peak phase
+        record.phase = 'peak_stress';
+        record.peakPeers = Math.max(baselinePeers, highTarget);
+        record.medianRttPeak = (baselineRtt || 25) + 18;
+        record.maxEventLoopLagMs = 3.6;
+        record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: 3.6 });
+        onProgress({ phase: 'peak_stress', progress: 0.6, currentPeers: record.peakPeers });
+        await new Promise((r) => setTimeout(r, 40));
+
+        // Scale down phase
+        record.phase = 'scaling_down';
+        record.settledPeers = Math.min(record.peakPeers, lowTarget);
+        record.medianRttSettled = (baselineRtt || 25) + 2;
+        record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: 1.1 });
+        onProgress({ phase: 'scaling_down', progress: 0.9, currentPeers: record.settledPeers });
+        await new Promise((r) => setTimeout(r, 40));
+
+        record.phase = 'completed';
+        record.status = 'completed';
+      } else {
+        // Live study: actively manipulate mesh target and request peer introductions
+        const meshMgr = this.mesh?.transport?.mesh || this.mesh?.transport?.webrtc?.mesh;
+
+        // 1. Scale Up Phase: relax degreeMax and request introductions from bridge
+        record.phase = 'scaling_up';
+        onProgress({ phase: 'scaling_up', progress: 0.2, currentPeers: this.mesh?.peers?.size ?? 0 });
+        if (meshMgr) {
+          meshMgr._degreeMax = highTarget;
+        }
+        if (typeof this.mesh?.transport?.requestPeerIntroductions === 'function') {
+          this.mesh.transport.requestPeerIntroductions();
+        }
+
+        // Measure event loop lag and peer count during scale up
+        const lagPhase1 = await this._sampleLagAndPeers(Math.min(cycleIntervalSec * 500, 2500));
+        record.peakPeers = Math.max(record.peakPeers, this.mesh?.peers?.size ?? 0, lagPhase1.maxPeers);
+        record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase1.maxLagMs);
+        record.medianRttPeak = this.mesh?.getMedianRtt?.();
+        record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: lagPhase1.maxLagMs });
+
+        // 2. Scale Down Phase: throttle degreeMax down to lowTarget
+        record.phase = 'scaling_down';
+        onProgress({ phase: 'scaling_down', progress: 0.7, currentPeers: this.mesh?.peers?.size ?? 0 });
+        if (meshMgr) {
+          meshMgr._degreeMax = lowTarget;
+          if (typeof meshMgr._scheduleDegreeCheck === 'function') {
+            meshMgr._scheduleDegreeCheck();
+          }
+        }
+
+        const lagPhase2 = await this._sampleLagAndPeers(Math.min(cycleIntervalSec * 500, 2500));
+        record.settledPeers = this.mesh?.peers?.size ?? 0;
+        record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase2.maxLagMs);
+        record.medianRttSettled = this.mesh?.getMedianRtt?.();
+        record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: lagPhase2.maxLagMs });
+
+        // Restore unconstrained degree after test
+        if (meshMgr) {
+          meshMgr._degreeMax = 0;
+        }
+
+        record.phase = 'completed';
+        record.status = 'completed';
+      }
+
+      // Check battery level post-run
+      if (typeof navigator !== 'undefined' && typeof navigator.getBattery === 'function') {
+        try {
+          const b2 = await navigator.getBattery();
+          record.batteryEnd = Math.round(b2.level * 100);
+          if (record.batteryStart !== null && record.batteryEnd !== null) {
+            record.batteryDelta = record.batteryStart - record.batteryEnd;
+          }
+        } catch {}
+      }
+
+      // Publish wire telemetry to #axona-track
+      if (this.mesh && typeof this.mesh.publishTelemetry === 'function') {
+        try {
+          await this.mesh.publishTelemetry({
+            note: `Dynamic Mesh Scale Test: peak ${record.peakPeers} peers · max lag ${record.maxEventLoopLagMs}ms`,
+            type: 'mesh_scale_stress_test',
+            attemptId,
+            mode: this.mode,
+            baselinePeers: record.baselinePeers,
+            peakPeers: record.peakPeers,
+            settledPeers: record.settledPeers,
+            medianRttBaseline: record.medianRttBaseline,
+            medianRttPeak: record.medianRttPeak,
+            medianRttSettled: record.medianRttSettled,
+            maxEventLoopLagMs: record.maxEventLoopLagMs,
+            batteryStart: record.batteryStart,
+            batteryEnd: record.batteryEnd,
+            batteryDelta: record.batteryDelta,
+            deviceName: this.telemetry?.deviceId?.name || 'anonymous',
+            ts: startedAt
+          });
+        } catch (e) {
+          console.warn('[axona.track lab] Failed to publish test 5 telemetry:', e);
+        }
+      }
+    } catch (err) {
+      record.status = 'aborted';
+      record.error = err.message;
+    } finally {
+      record.elapsedMs = Date.now() - startedAt;
+      onProgress({ phase: record.status, progress: 1.0, currentPeers: record.settledPeers });
+      this._notify();
+    }
+
+    return record;
+  }
+
+  async _sampleLagAndPeers(durationMs) {
+    const sampleIntervalMs = 50;
+    let maxLagMs = 0;
+    let maxPeers = this.mesh?.peers?.size ?? 0;
+    const start = Date.now();
+    let expectedNext = start + sampleIntervalMs;
+
+    while (Date.now() - start < durationMs) {
+      await new Promise((r) => setTimeout(r, sampleIntervalMs));
+      const now = Date.now();
+      const lag = Math.max(0, now - expectedNext);
+      if (lag > maxLagMs) maxLagMs = Math.round(lag);
+      const currPeers = this.mesh?.peers?.size ?? 0;
+      if (currPeers > maxPeers) maxPeers = currPeers;
+      expectedNext = now + sampleIntervalMs;
+    }
+
+    return { maxLagMs, maxPeers };
+  }
+
+  // =========================================================================
   // REPORT EXPORT & SANITIZATION (Strict Privacy Allowlist)
   // =========================================================================
   exportReport() {
@@ -382,6 +569,7 @@ export class AdaptationLab {
         totalHandoffTests: this.history.test1Handoff.length,
         totalGraceTests: this.history.test2Grace.length,
         totalFastPathTests: this.history.test3FastPath.length,
+        totalScaleTests: this.history.test5MeshScale.length,
         governorStats: this.getGovernorStats()
       },
       history: {
@@ -393,7 +581,8 @@ export class AdaptationLab {
             ...p,
             peerId: redactPeerId(p.peerId)
           }))
-        }))
+        })),
+        test5MeshScale: this.history.test5MeshScale.slice(0, 10)
       }
     };
   }
@@ -405,7 +594,8 @@ export class AdaptationLab {
       historyCounts: {
         test1: this.history.test1Handoff.length,
         test2: this.history.test2Grace.length,
-        test3: this.history.test3FastPath.length
+        test3: this.history.test3FastPath.length,
+        test5: this.history.test5MeshScale.length
       }
     });
   }

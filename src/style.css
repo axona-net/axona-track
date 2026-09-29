@@ -517,6 +517,18 @@ body {
   box-shadow: var(--shadow-glow-cyan);
 }
 
+.btn-rose {
+  background: rgba(244, 63, 94, 0.1);
+  color: var(--accent-rose);
+  border-color: rgba(244, 63, 94, 0.3);
+}
+
+.btn-rose:hover {
+  background: rgba(244, 63, 94, 0.2);
+  border-color: var(--accent-rose);
+  box-shadow: 0 0 16px rgba(244, 63, 94, 0.3);
+}
+
 .btn-sm {
   padding: 4px 12px;
   font-size: 0.76rem;

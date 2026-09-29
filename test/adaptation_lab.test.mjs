@@ -161,6 +161,38 @@ await test('Report export strictly omits hardware concurrency, RAM, and battery,
   }
 });
 
+// 7. Test 5: Dynamic Mesh Scaling & Connection Set Stress Test
+await test('Test 5: Dynamic mesh scaling cycles targets, samples event-loop lag, and records history', async () => {
+  const lab = new AdaptationLab({ mode: 'offline_mock' });
+
+  let progressPhases = [];
+  const res = await lab.runTest5MeshScale({
+    cycleIntervalSec: 1,
+    lowTarget: 3,
+    highTarget: 15,
+    onProgress: (p) => progressPhases.push(p.phase)
+  });
+
+  assert.equal(res.testId, 'test_5_mesh_scale');
+  assert.equal(res.status, 'completed');
+  assert.ok(res.peakPeers >= 15);
+  assert.ok(res.settledPeers <= 3);
+  assert.ok(res.maxEventLoopLagMs >= 0);
+  assert.ok(res.samples.length >= 2);
+  assert.ok(progressPhases.includes('scaling_up'));
+  assert.ok(progressPhases.includes('peak_stress'));
+  assert.ok(progressPhases.includes('scaling_down'));
+
+  // Ensure record is in history
+  assert.equal(lab.history.test5MeshScale.length, 1);
+  assert.equal(lab.history.test5MeshScale[0].attemptId, res.attemptId);
+
+  // Check exported report includes test5 summary
+  const report = lab.exportReport();
+  assert.equal(report.summary.totalScaleTests, 1);
+  assert.equal(report.history.test5MeshScale.length, 1);
+});
+
 console.log('\n========================================');
 console.log('RESULT: All Adaptation Lab tests passed.');
 console.log('========================================\n');

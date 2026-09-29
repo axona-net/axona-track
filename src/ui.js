@@ -268,6 +268,17 @@ export class TrackUI {
               <div class="lab-card-metrics" id="labT4Metrics">Passed: 0 · Coalesced: 0</div>
               <button class="btn btn-sm" id="btnToggleLabGovernor" style="font-size: 0.75rem; padding: 6px 10px;">Arm Governor</button>
             </div>
+
+            <!-- Test 5: Dynamic Mesh Scaling & Stress Test (v0.3.0) -->
+            <div class="lab-card">
+              <div class="lab-card-title">
+                <span>5. Dynamic Mesh Scaling</span>
+                <span class="badge-tag rose" id="labT5Status">Ready</span>
+              </div>
+              <div class="lab-card-desc">Cycle connection count up & down to measure RTT shift, frame lag & battery impact.</div>
+              <div class="lab-card-metrics" id="labT5Metrics">Peak: -- · Lag: -- · Battery: --</div>
+              <button class="btn btn-rose btn-sm" id="btnRunLabT5" style="font-size: 0.75rem; padding: 6px 10px;">Run Scaling Stress</button>
+            </div>
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
@@ -576,6 +587,41 @@ export class TrackUI {
           metricsEl.textContent = `Passed: ${stats.passedCount} · Coalesced: ${stats.coalescedCount} · Suppressed: ${stats.suppressedCount}`;
         }
         this.showToast(`Backpressure governor: ${active ? 'ARMED (throttled)' : 'RESTORED'}`);
+      });
+
+      // Test 5: Dynamic Mesh Scaling & Stress Test (v0.3.0)
+      document.getElementById('btnRunLabT5')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btnRunLabT5');
+        const statusEl = document.getElementById('labT5Status');
+        const metricsEl = document.getElementById('labT5Metrics');
+        if (btn) btn.disabled = true;
+        if (statusEl) {
+          statusEl.className = 'badge-tag amber';
+          statusEl.textContent = 'Running…';
+        }
+        try {
+          const res = await this.lab.runTest5MeshScale({
+            onProgress: ({ phase, progress, currentPeers }) => {
+              if (statusEl) statusEl.textContent = `${phase.replace(/_/g, ' ')} (${currentPeers}p)`;
+            }
+          });
+          if (statusEl) {
+            statusEl.className = `badge-tag ${res.status === 'completed' ? 'emerald' : 'rose'}`;
+            statusEl.textContent = res.status === 'completed' ? 'Completed' : 'Aborted';
+          }
+          if (metricsEl) {
+            const batText = res.batteryDelta !== null ? `${res.batteryDelta >= 0 ? '-' : '+'}${Math.abs(res.batteryDelta)}%` : 'n/a';
+            metricsEl.textContent = `Peak: ${res.peakPeers}p · Lag: ${res.maxEventLoopLagMs}ms · Bat: ${batText}`;
+          }
+          this.showToast(`Test 5 Scaling: Peak ${res.peakPeers} peers, Lag ${res.maxEventLoopLagMs}ms`);
+        } catch (err) {
+          if (statusEl) {
+            statusEl.className = 'badge-tag rose';
+            statusEl.textContent = 'Error';
+          }
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       });
 
       // Export Lab Report (Privacy-Safe)
