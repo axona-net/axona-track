@@ -297,11 +297,10 @@ export class TelemetryService {
         deviceName: this.deviceId.name,
         payload
       });
+      this.onTelemetryEvent('lifecycle', payload);
     } catch (err) {
       console.error('[axona.track] Failed to persist lifecycle event:', err);
     }
-
-    this.onTelemetryEvent('lifecycle', payload);
 
     // If entering hidden, frozen, or offline, queue to offline outbox
     if (newState === 'HIDDEN' || newState === 'FROZEN' || newState === 'OFFLINE') {

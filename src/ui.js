@@ -603,7 +603,7 @@ export class TrackUI {
       const evDevice = ev.deviceName || ev.payload?.deviceName;
       const isCurrentDevice = !evDevice || evDevice === this.deviceId.name;
       const deviceTag = evDevice
-        ? `<span class="badge-tag ${isCurrentDevice ? 'emerald' : 'cyan'}" style="font-size: 0.68rem;" title="${this._escape(evDevice)}">${isCurrentDevice ? 'This tab' : this._escape(evDevice)}</span>`
+        ? `<span class="badge-tag ${isCurrentDevice ? 'emerald' : 'cyan'}" style="font-size: 0.68rem;" title="${this._escape(evDevice)}">${isCurrentDevice ? 'Device local' : this._escape(evDevice)}</span>`
         : '';
 
       return `
