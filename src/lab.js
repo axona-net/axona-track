@@ -370,6 +370,11 @@ export class AdaptationLab {
     const startedAt = Date.now();
     const attemptId = `scale-${Math.random().toString(36).slice(2, 8)}`;
 
+    // Finite executable limits (clamped for mobile safety)
+    const clampedInterval = Math.max(1, Math.min(Number(cycleIntervalSec) || 4, 30));
+    const clampedLow = Math.max(1, Math.min(Number(lowTarget) || 3, 10));
+    const clampedHigh = Math.max(clampedLow + 1, Math.min(Number(highTarget) || 15, 25));
+
     let batteryStart = null;
     let batteryChargingStart = null;
     if (typeof navigator !== 'undefined' && typeof navigator.getBattery === 'function') {
@@ -408,6 +413,9 @@ export class AdaptationLab {
     if (this.history.test5MeshScale.length > 50) this.history.test5MeshScale.pop();
     this._notify();
 
+    const meshMgr = this.mesh?.transport?.mesh || this.mesh?.transport?.webrtc?.mesh;
+    const initialDegreeMax = meshMgr ? (meshMgr._degreeMax ?? 0) : 0;
+
     try {
       if (this.mode === 'offline_mock') {
         // Deterministic mock simulation across phases
@@ -417,7 +425,7 @@ export class AdaptationLab {
 
         // Peak phase
         record.phase = 'peak_stress';
-        record.peakPeers = Math.max(baselinePeers, highTarget);
+        record.peakPeers = Math.max(baselinePeers, clampedHigh);
         record.medianRttPeak = (baselineRtt || 25) + 18;
         record.maxEventLoopLagMs = 3.6;
         record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: 3.6 });
@@ -426,7 +434,7 @@ export class AdaptationLab {
 
         // Scale down phase
         record.phase = 'scaling_down';
-        record.settledPeers = Math.min(record.peakPeers, lowTarget);
+        record.settledPeers = Math.min(record.peakPeers, clampedLow);
         record.medianRttSettled = (baselineRtt || 25) + 2;
         record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: 1.1 });
         onProgress({ phase: 'scaling_down', progress: 0.9, currentPeers: record.settledPeers });
@@ -436,48 +444,51 @@ export class AdaptationLab {
         record.status = 'completed';
       } else {
         // Live study: actively manipulate mesh target and request peer introductions
-        const meshMgr = this.mesh?.transport?.mesh || this.mesh?.transport?.webrtc?.mesh;
+        try {
+          // 1. Scale Up Phase: relax degreeMax and request introductions from bridge
+          record.phase = 'scaling_up';
+          onProgress({ phase: 'scaling_up', progress: 0.2, currentPeers: this.mesh?.peers?.size ?? 0 });
+          if (meshMgr) {
+            meshMgr._degreeMax = clampedHigh;
+          }
+          if (typeof this.mesh?.transport?.requestPeerIntroductions === 'function') {
+            this.mesh.transport.requestPeerIntroductions();
+          }
 
-        // 1. Scale Up Phase: relax degreeMax and request introductions from bridge
-        record.phase = 'scaling_up';
-        onProgress({ phase: 'scaling_up', progress: 0.2, currentPeers: this.mesh?.peers?.size ?? 0 });
-        if (meshMgr) {
-          meshMgr._degreeMax = highTarget;
-        }
-        if (typeof this.mesh?.transport?.requestPeerIntroductions === 'function') {
-          this.mesh.transport.requestPeerIntroductions();
-        }
+          // Measure event loop lag and peer count during scale up (bounded by cycle interval)
+          const lagPhase1 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500));
+          record.peakPeers = Math.max(record.peakPeers, this.mesh?.peers?.size ?? 0, lagPhase1.maxPeers);
+          record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase1.maxLagMs);
+          record.medianRttPeak = this.mesh?.getMedianRtt?.();
+          record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: lagPhase1.maxLagMs });
 
-        // Measure event loop lag and peer count during scale up
-        const lagPhase1 = await this._sampleLagAndPeers(Math.min(cycleIntervalSec * 500, 2500));
-        record.peakPeers = Math.max(record.peakPeers, this.mesh?.peers?.size ?? 0, lagPhase1.maxPeers);
-        record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase1.maxLagMs);
-        record.medianRttPeak = this.mesh?.getMedianRtt?.();
-        record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: lagPhase1.maxLagMs });
+          // 2. Scale Down Phase: throttle degreeMax down to lowTarget
+          record.phase = 'scaling_down';
+          onProgress({ phase: 'scaling_down', progress: 0.7, currentPeers: this.mesh?.peers?.size ?? 0 });
+          if (meshMgr) {
+            meshMgr._degreeMax = clampedLow;
+            if (typeof meshMgr._scheduleDegreeCheck === 'function') {
+              meshMgr._scheduleDegreeCheck();
+            }
+          }
 
-        // 2. Scale Down Phase: throttle degreeMax down to lowTarget
-        record.phase = 'scaling_down';
-        onProgress({ phase: 'scaling_down', progress: 0.7, currentPeers: this.mesh?.peers?.size ?? 0 });
-        if (meshMgr) {
-          meshMgr._degreeMax = lowTarget;
-          if (typeof meshMgr._scheduleDegreeCheck === 'function') {
-            meshMgr._scheduleDegreeCheck();
+          const lagPhase2 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500));
+          record.settledPeers = this.mesh?.peers?.size ?? 0;
+          record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase2.maxLagMs);
+          record.medianRttSettled = this.mesh?.getMedianRtt?.();
+          record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: lagPhase2.maxLagMs });
+
+          record.phase = 'completed';
+          record.status = 'completed';
+        } finally {
+          // Guaranteed restoration of initial mesh degree cap
+          if (meshMgr) {
+            meshMgr._degreeMax = initialDegreeMax;
+            if (typeof meshMgr._scheduleDegreeCheck === 'function') {
+              meshMgr._scheduleDegreeCheck();
+            }
           }
         }
-
-        const lagPhase2 = await this._sampleLagAndPeers(Math.min(cycleIntervalSec * 500, 2500));
-        record.settledPeers = this.mesh?.peers?.size ?? 0;
-        record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase2.maxLagMs);
-        record.medianRttSettled = this.mesh?.getMedianRtt?.();
-        record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: lagPhase2.maxLagMs });
-
-        // Restore unconstrained degree after test
-        if (meshMgr) {
-          meshMgr._degreeMax = 0;
-        }
-
-        record.phase = 'completed';
-        record.status = 'completed';
       }
 
       // Check battery level post-run
