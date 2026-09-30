@@ -193,6 +193,77 @@ await test('Test 5: Dynamic mesh scaling cycles targets, samples event-loop lag,
   assert.equal(report.history.test5MeshScale.length, 1);
 });
 
+// 8. Test 5 Concurrency Lock Guard
+await test('Test 5: Rejects concurrent run invocations while a run is active', async () => {
+  const lab = new AdaptationLab({ mode: 'offline_mock' });
+
+  // Start a run that takes some time
+  const p1 = lab.runTest5MeshScale({ cycleIntervalSec: 2, lowTarget: 3, highTarget: 10 });
+
+  // Concurrently attempt a second run
+  const res2 = await lab.runTest5MeshScale({ cycleIntervalSec: 2, lowTarget: 3, highTarget: 10 });
+  assert.equal(res2.status, 'concurrency_rejected');
+  assert.equal(res2.reason, 'concurrent_run_active');
+
+  // Await the first run to complete
+  const res1 = await p1;
+  assert.equal(res1.status, 'completed');
+
+  // Verify that after p1 finishes, a subsequent run succeeds
+  const res3 = await lab.runTest5MeshScale({ cycleIntervalSec: 1, lowTarget: 3, highTarget: 8 });
+  assert.equal(res3.status, 'completed');
+});
+
+// 9. Test 5 AbortSignal Cancellation
+await test('Test 5: AbortSignal halts in-flight testing and cleans up status', async () => {
+  const lab = new AdaptationLab({ mode: 'offline_mock' });
+
+  const controller = new AbortController();
+  // Trigger abort shortly after start
+  setTimeout(() => controller.abort(), 20);
+
+  const res = await lab.runTest5MeshScale({
+    cycleIntervalSec: 5,
+    lowTarget: 3,
+    highTarget: 12,
+    signal: controller.signal
+  });
+
+  assert.equal(res.status, 'aborted');
+  assert.ok(res.error.includes('aborted by signal'));
+
+  // Ensure mutex was cleanly released so a subsequent run can execute
+  const resFollowup = await lab.runTest5MeshScale({ cycleIntervalSec: 1, lowTarget: 2, highTarget: 6 });
+  assert.equal(resFollowup.status, 'completed');
+});
+
+// 10. Test 5 Epoch Fencing Guard
+await test('Test 5: Epoch fencing prevents a late cleanup from overwriting newer degree policy', async () => {
+  const mockMeshMgr = { _degreeMax: 8, _scheduleDegreeCheck: () => {} };
+  const mockMesh = {
+    isConnected: true,
+    peers: new Map(),
+    transport: { mesh: mockMeshMgr },
+    getMedianRtt: () => 30
+  };
+  const lab = new AdaptationLab({ mode: 'live_study', mesh: mockMesh });
+
+  // Simulate starting Test 5 run 1
+  const controller = new AbortController();
+  const p1 = lab.runTest5MeshScale({ cycleIntervalSec: 1, lowTarget: 2, highTarget: 15, signal: controller.signal });
+
+  // In the meantime, simulate external epoch advancement
+  lab._test5Epoch = 999;
+  mockMeshMgr._degreeMax = 20; // newer policy applied
+
+  controller.abort();
+  await p1;
+
+  // Verify that degreeMax was NOT overwritten back to 8 by the aborted run's cleanup
+  assert.equal(mockMeshMgr._degreeMax, 20);
+});
+
 console.log('\n========================================');
 console.log('RESULT: All Adaptation Lab tests passed.');
 console.log('========================================\n');
+

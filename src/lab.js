@@ -366,7 +366,42 @@ export class AdaptationLab {
   // =========================================================================
   // TEST 5: Dynamic Mesh Scaling & Connection Set Stress Test
   // =========================================================================
-  async runTest5MeshScale({ cycleIntervalSec = 4, lowTarget = 3, highTarget = 15, onProgress = () => {} } = {}) {
+  async runTest5MeshScale({ cycleIntervalSec = 4, lowTarget = 3, highTarget = 15, onProgress = () => {}, signal = null } = {}) {
+    // 1. Concurrency Guard: refuse overlapping/concurrent runs
+    if (this._test5Running) {
+      const rejectedRecord = {
+        testId: 'test_5_mesh_scale',
+        attemptId: `scale-rejected-${Date.now()}`,
+        mode: this.mode,
+        startedAt: Date.now(),
+        status: 'concurrency_rejected',
+        reason: 'concurrent_run_active',
+        elapsedMs: 0
+      };
+      this.history.test5MeshScale.unshift(rejectedRecord);
+      this._notify();
+      return rejectedRecord;
+    }
+
+    if (signal?.aborted) {
+      const abortedRecord = {
+        testId: 'test_5_mesh_scale',
+        attemptId: `scale-aborted-${Date.now()}`,
+        mode: this.mode,
+        startedAt: Date.now(),
+        status: 'aborted',
+        reason: 'aborted_prior_to_start',
+        elapsedMs: 0
+      };
+      this.history.test5MeshScale.unshift(abortedRecord);
+      this._notify();
+      return abortedRecord;
+    }
+
+    this._test5Running = true;
+    this._test5Epoch = (this._test5Epoch || 0) + 1;
+    const currentEpoch = this._test5Epoch;
+
     const startedAt = Date.now();
     const attemptId = `scale-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -418,33 +453,53 @@ export class AdaptationLab {
 
     try {
       if (this.mode === 'offline_mock') {
-        // Deterministic mock simulation across phases
+        // Deterministic mock simulation across phases with abort checks
+        if (signal?.aborted) throw new Error('Test 5 aborted by signal');
         record.phase = 'scaling_up';
         onProgress({ phase: 'scaling_up', progress: 0.25, currentPeers: baselinePeers });
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(resolve, 40);
+          if (signal) {
+            signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Test 5 aborted by signal')); }, { once: true });
+          }
+        });
 
         // Peak phase
+        if (signal?.aborted) throw new Error('Test 5 aborted by signal');
         record.phase = 'peak_stress';
         record.peakPeers = Math.max(baselinePeers, clampedHigh);
         record.medianRttPeak = (baselineRtt || 25) + 18;
         record.maxEventLoopLagMs = 3.6;
         record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: 3.6 });
         onProgress({ phase: 'peak_stress', progress: 0.6, currentPeers: record.peakPeers });
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(resolve, 40);
+          if (signal) {
+            signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Test 5 aborted by signal')); }, { once: true });
+          }
+        });
 
         // Scale down phase
+        if (signal?.aborted) throw new Error('Test 5 aborted by signal');
         record.phase = 'scaling_down';
         record.settledPeers = Math.min(record.peakPeers, clampedLow);
         record.medianRttSettled = (baselineRtt || 25) + 2;
         record.samples.push({ phase: 'settled', peers: record.settledPeers, rtt: record.medianRttSettled, lag: 1.1 });
         onProgress({ phase: 'scaling_down', progress: 0.9, currentPeers: record.settledPeers });
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(resolve, 40);
+          if (signal) {
+            signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Test 5 aborted by signal')); }, { once: true });
+          }
+        });
 
         record.phase = 'completed';
         record.status = 'completed';
       } else {
         // Live study: actively manipulate mesh target and request peer introductions
         try {
+          if (signal?.aborted) throw new Error('Test 5 aborted by signal');
+
           // 1. Scale Up Phase: relax degreeMax and request introductions from bridge
           record.phase = 'scaling_up';
           onProgress({ phase: 'scaling_up', progress: 0.2, currentPeers: this.mesh?.peers?.size ?? 0 });
@@ -456,11 +511,13 @@ export class AdaptationLab {
           }
 
           // Measure event loop lag and peer count during scale up (bounded by cycle interval)
-          const lagPhase1 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500));
+          const lagPhase1 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500), signal);
           record.peakPeers = Math.max(record.peakPeers, this.mesh?.peers?.size ?? 0, lagPhase1.maxPeers);
           record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase1.maxLagMs);
           record.medianRttPeak = this.mesh?.getMedianRtt?.();
           record.samples.push({ phase: 'peak', peers: record.peakPeers, rtt: record.medianRttPeak, lag: lagPhase1.maxLagMs });
+
+          if (signal?.aborted) throw new Error('Test 5 aborted by signal');
 
           // 2. Scale Down Phase: throttle degreeMax down to lowTarget
           record.phase = 'scaling_down';
@@ -472,7 +529,7 @@ export class AdaptationLab {
             }
           }
 
-          const lagPhase2 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500));
+          const lagPhase2 = await this._sampleLagAndPeers(Math.min(clampedInterval * 500, 2500), signal);
           record.settledPeers = this.mesh?.peers?.size ?? 0;
           record.maxEventLoopLagMs = Math.max(record.maxEventLoopLagMs, lagPhase2.maxLagMs);
           record.medianRttSettled = this.mesh?.getMedianRtt?.();
@@ -481,8 +538,9 @@ export class AdaptationLab {
           record.phase = 'completed';
           record.status = 'completed';
         } finally {
-          // Guaranteed restoration of initial mesh degree cap
-          if (meshMgr) {
+          // Epoch-fenced restoration: ONLY restore if this execution's epoch is still current
+          // Prevents late cleanups from overwriting newer policy
+          if (meshMgr && this._test5Epoch === currentEpoch) {
             meshMgr._degreeMax = initialDegreeMax;
             if (typeof meshMgr._scheduleDegreeCheck === 'function') {
               meshMgr._scheduleDegreeCheck();
@@ -503,7 +561,7 @@ export class AdaptationLab {
       }
 
       // Publish wire telemetry to #axona-track
-      if (this.mesh && typeof this.mesh.publishTelemetry === 'function') {
+      if (this.mesh && typeof this.mesh.publishTelemetry === 'function' && record.status === 'completed') {
         try {
           await this.mesh.publishTelemetry({
             note: `Dynamic Mesh Scale Test: peak ${record.peakPeers} peers · max lag ${record.maxEventLoopLagMs}ms`,
@@ -531,6 +589,7 @@ export class AdaptationLab {
       record.status = 'aborted';
       record.error = err.message;
     } finally {
+      this._test5Running = false;
       record.elapsedMs = Date.now() - startedAt;
       onProgress({ phase: record.status, progress: 1.0, currentPeers: record.settledPeers });
       this._notify();
@@ -539,7 +598,7 @@ export class AdaptationLab {
     return record;
   }
 
-  async _sampleLagAndPeers(durationMs) {
+  async _sampleLagAndPeers(durationMs, signal = null) {
     const sampleIntervalMs = 50;
     let maxLagMs = 0;
     let maxPeers = this.mesh?.peers?.size ?? 0;
@@ -547,7 +606,18 @@ export class AdaptationLab {
     let expectedNext = start + sampleIntervalMs;
 
     while (Date.now() - start < durationMs) {
-      await new Promise((r) => setTimeout(r, sampleIntervalMs));
+      if (signal?.aborted) {
+        throw new Error('Test 5 aborted by signal');
+      }
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, sampleIntervalMs);
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            clearTimeout(t);
+            reject(new Error('Test 5 aborted by signal'));
+          }, { once: true });
+        }
+      });
       const now = Date.now();
       const lag = Math.max(0, now - expectedNext);
       if (lag > maxLagMs) maxLagMs = Math.round(lag);
