@@ -29,6 +29,14 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
   let applying = false;
   let deferred = false;
   let timer = null;
+  let reloaded = false;
+
+  function doReload() {
+    if (reloaded) return;
+    reloaded = true;
+    console.log('[axona.track] Reloading page to activate latest version');
+    window.location.reload();
+  }
 
   function applyUpdate() {
     if (applying) return;
@@ -37,17 +45,17 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
 
     if (onApplying) onApplying();
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        console.log('[axona.track] Service worker controller changed; refreshing page to new version');
-        window.location.reload();
-      });
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true });
     }
+
+    // Safety fallback: if controllerchange doesn't fire within 3500ms, force reload
+    setTimeout(doReload, 3500);
 
     if (updateServiceWorker) {
       updateServiceWorker(true);
     } else {
-      window.location.reload();
+      doReload();
     }
   }
 
@@ -80,7 +88,7 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
 
   function scheduleApply() {
     needRefresh = true;
-    if (document.visibilityState === 'hidden') {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       // Hidden tab is the safest moment — apply immediately
       applyUpdate();
       return;
@@ -95,12 +103,27 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
     timer = setTimeout(attemptApply, APPLY_GRACE_MS);
   }
 
-  // Hidden tab hook
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && needRefresh) {
-      applyUpdate();
-    }
-  });
+  // Hidden tab hook: if tab goes hidden while update is waiting, apply instantly
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && needRefresh) {
+        applyUpdate();
+      }
+    });
+  }
+
+  // Cross-tab synchronization: if another tab called skipWaiting, this tab's controller changes
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!applying) {
+        if (!userIsEditing()) {
+          doReload();
+        } else {
+          scheduleApply();
+        }
+      }
+    });
+  }
 
   try {
     updateServiceWorker = registerSW({
@@ -117,13 +140,38 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
         const check = () => {
           registration.update().catch(() => {});
         };
-        // 60-second polling check
+
+        // 1. Initial check shortly after load
+        setTimeout(check, 1500);
+
+        // 2. Immediate check if a worker is already waiting upon registration
+        if (registration.waiting) {
+          console.log('[axona.track] Service worker already waiting upon registration');
+          scheduleApply();
+        }
+
+        // 3. Detect background install completion
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('[axona.track] New service worker installed and waiting');
+                scheduleApply();
+              }
+            });
+          }
+        });
+
+        // 4. 60-second polling check
         setInterval(check, CHECK_INTERVAL_MS);
-        // Foreground return
+
+        // 5. Foreground return (visibility change to visible)
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') check();
         });
-        // Network reconnect
+
+        // 6. Network reconnect
         window.addEventListener('online', check);
       }
     });
