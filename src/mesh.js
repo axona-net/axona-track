@@ -42,6 +42,9 @@ export class MeshClient {
 
     this.isConnected = false;
     this.isReconnecting = false;
+    this._bridgeOpenListeners = new Set();
+    this._lastStatsEmit = 0;
+    this._statsEmitTimer = null;
   }
 
   _resolveRegion() {
@@ -112,6 +115,9 @@ export class MeshClient {
           this.isConnected = true;
           this.isReconnecting = false;
           this.onStatus('connected', `Bridge open (${this.getPeerCount()} peers)`);
+          for (const cb of Array.from(this._bridgeOpenListeners)) {
+            try { cb(); } catch (err) { console.error('[axona.track] bridge listener error:', err); }
+          }
         } else if (state === 'connecting') {
           this.isReconnecting = true;
           this.onStatus('connecting', 'Reconnecting to bridge…');
@@ -242,7 +248,36 @@ export class MeshClient {
     this._emitStats();
   }
 
+  onBridgeOpen(cb) {
+    if (typeof cb === 'function') {
+      this._bridgeOpenListeners.add(cb);
+      if (this.isConnected) {
+        setTimeout(() => {
+          try { cb(); } catch (err) { console.error('[axona.track] onBridgeOpen callback error:', err); }
+        }, 0);
+      }
+    }
+    return () => this._bridgeOpenListeners.delete(cb);
+  }
+
   _emitStats() {
+    const now = Date.now();
+    if (now - this._lastStatsEmit < 1000) {
+      if (!this._statsEmitTimer) {
+        this._statsEmitTimer = setTimeout(() => {
+          this._statsEmitTimer = null;
+          this._emitStats();
+        }, 1000 - (now - this._lastStatsEmit));
+      }
+      return;
+    }
+
+    this._lastStatsEmit = now;
+    if (this._statsEmitTimer) {
+      clearTimeout(this._statsEmitTimer);
+      this._statsEmitTimer = null;
+    }
+
     this.onPeerStats({
       totalPeers: this.getPeerCount(),
       webrtcPeers: this.peers.size,

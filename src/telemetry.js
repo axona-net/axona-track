@@ -124,25 +124,34 @@ export class TelemetryService {
       }));
 
       const eventRecord = {
-        note: `Pre-freeze Snapshot Saved: ${snapshot.peerCount} peers, ${snapshot.roles.length} roles held (trigger: ${freezeDetail.trigger})`,
+        note: `📴 Phone sleeping: ${this.deviceId.name} (suspended with ${snapshot.peerCount} peers, trigger: ${freezeDetail.trigger})`,
         type: 'state_transition',
         event: 'pre_freeze_snapshot',
         trigger: freezeDetail.trigger,
         stateBefore: freezeDetail.stateBefore,
         peersHeld: snapshot.peerCount,
         rolesHeld: snapshot.roles.length,
+        deviceName: this.deviceId.name,
         ts: Date.now()
       };
 
       appendLocalEvent({
         category: 'lifecycle',
-        title: `Pre-freeze Snapshot Saved`,
-        detail: `Trigger: ${freezeDetail.trigger} · Peers: ${snapshot.peerCount} · Roles: ${snapshot.roles.length}`,
+        title: `📴 Phone sleeping`,
+        detail: `Suspended with ${snapshot.peerCount} peers (${freezeDetail.trigger})`,
+        deviceName: this.deviceId.name,
         payload: eventRecord
       });
 
-      // Hold in offline outbox while hidden/frozen
+      // Hold in offline outbox while hidden/frozen as fallback
       queueOfflineEvent(eventRecord);
+
+      // Attempt immediate live publish over open bridge before OS suspends
+      if (this.mesh.isConnected) {
+        this.mesh.publishTelemetry(eventRecord).catch((err) => {
+          console.warn('[axona.track] Live pre-freeze publish attempt missed:', err.message);
+        });
+      }
     };
 
     // 4. Resume & Recovery from background
@@ -316,87 +325,146 @@ export class TelemetryService {
     this._isFlushing = true;
 
     try {
-      const lockOutcome = await withFlushLock(async () => {
-        const preSnapshot = popPreFreezeSnapshot();
-        const observedIntervalMs = resumeDetail.observedIntervalMs || resumeDetail.sleepDurationMs || 0;
+      const observedIntervalMs = resumeDetail.observedIntervalMs || resumeDetail.sleepDurationMs || 0;
+      const preSnapshot = popPreFreezeSnapshot();
 
-        // 1. Trigger mesh reconnect and recovery probe with preSnapshot
-        const recoveryResult = await this.mesh.recoverFromBackground(observedIntervalMs, preSnapshot);
+      // 1. Trigger mesh reconnect and recovery probe with preSnapshot
+      const recoveryResult = await this.mesh.recoverFromBackground(observedIntervalMs, preSnapshot);
 
-        const rolesBefore = preSnapshot?.meshSnapshot?.roles?.length ?? (recoveryResult.rolesBeforeSleep || 0);
-        const prePeers = preSnapshot?.meshSnapshot?.peerCount ?? recoveryResult.prePeersCount;
-        const currentPeers = this.mesh.getPeerCount();
-        const peersLostCount = recoveryResult.peersLostCount;
+      updateSessionMetrics((m) => ({
+        ...m,
+        recoveriesCount: (m.recoveriesCount || 0) + 1
+      }));
 
-        updateSessionMetrics((m) => ({
-          ...m,
-          recoveriesCount: (m.recoveriesCount || 0) + 1
-        }));
+      // Flush routine executed under exclusive flush lock once bridge is open
+      const doFlush = async () => {
+        return withFlushLock(async () => {
+          if (!this.mesh.isConnected) return false;
 
-        // 2. Collect current offline outbox batch without clearing yet
-        const heldEvents = getOfflineOutbox();
-        const heldIds = heldEvents.map((e) => e.id);
+          const prePeers = preSnapshot?.meshSnapshot?.peerCount ?? recoveryResult.prePeersCount;
+          const currentPeers = this.mesh.getPeerCount();
+          const heldEvents = getOfflineOutbox();
+          const heldIds = heldEvents.map((e) => e.id);
 
-        const payload = {
-          note: `Wake Recovery: Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Attempting flush of ${heldEvents.length} held events.`,
-          v: 1,
-          appVersion: APP_VERSION,
-          kernelVersion: KERNEL_VERSION,
-          type: 'recovery_journal_flush',
-          deviceName: this.deviceId.name,
-          flushState: 'attempted',
-          summary: `Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Attempting recovery flush of ${heldEvents.length} held events.`,
-          recovery: {
-            observedIntervalMs,
-            passiveAudit: recoveryResult.passiveAudit,
-            reconnectWaitElapsedMs: recoveryResult.reconnectWaitElapsedMs,
-            waitOutcome: recoveryResult.waitOutcome,
-            settledBridgeConnected: recoveryResult.settledBridgeConnected,
+          // A. Publish human-readable wake announcement to #axona-track
+          const wakePayload = {
+            note: `📱 Phone woke up: ${this.deviceId.name} (resumed after ${Math.round(observedIntervalMs / 1000)}s sleep, restored ${currentPeers} peers)`,
+            v: 1,
+            appVersion: APP_VERSION,
+            kernelVersion: KERNEL_VERSION,
+            type: 'lifecycle_transition',
+            event: 'wake_resume',
+            deviceName: this.deviceId.name,
+            sleepIntervalMs: observedIntervalMs,
             peersBeforeSleep: prePeers,
             peersAfterWake: currentPeers,
-            peersLostCount,
-            rolesBeforeSleep: rolesBefore,
-            rolesAfterWake: this.mesh.activeRoles.size,
-            trigger: resumeDetail.trigger
-          },
-          heldOfflineEventsCount: heldEvents.length,
-          heldOfflineEvents: heldEvents,
-          ts: Date.now()
-        };
+            ts: Date.now()
+          };
 
-        this.onTelemetryEvent('recovery', payload);
-
-        // Wait for transport to settle before attempting publish
-        let attempts = 0;
-        while (!this.mesh.isConnected && attempts < 10) {
-          await new Promise((r) => setTimeout(r, 300));
-          attempts++;
-        }
-
-        // 3. Publish and only ACK/clear the flushed IDs upon confirmed success
-        const ok = await this.mesh.publishTelemetry(payload);
-        if (ok) {
-          await ackOfflineOutbox(heldIds);
           appendLocalEvent({
-            category: 'recovery',
-            title: `Wake Recovery & Offline Journal Flushed (${Math.round(observedIntervalMs / 1000)}s interval)`,
-            detail: `Flushed ${heldIds.length} events · Wait: ${recoveryResult.waitOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Settled bridge: ${recoveryResult.settledBridgeConnected ? 'open' : 'disconnected'} · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
-            payload
+            category: 'lifecycle',
+            title: `📱 Phone woke up`,
+            detail: `Resumed after ${Math.round(observedIntervalMs / 1000)}s sleep (${currentPeers} peers)`,
+            deviceName: this.deviceId.name,
+            payload: wakePayload
           });
-          console.log(`[axona.track] Successfully published recovery flush and acked ${heldIds.length} held events.`);
-        } else {
-          appendLocalEvent({
-            category: 'recovery',
-            title: `Wake Recovery Flush Retained (${heldIds.length} events)`,
-            detail: `Publish unconfirmed · Retained in outbox · Wait: ${recoveryResult.waitOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms) · Continuity: ${recoveryResult.passiveAudit.continuityState}`,
-            payload
-          });
-          console.warn(`[axona.track] Recovery flush publish unconfirmed; retaining ${heldIds.length} events in outbox for subsequent retry.`);
-        }
-      });
 
-      if (lockOutcome && lockOutcome.acquired === false) {
-        console.log('[axona.track] Flush lock held by another tab; deferring recovery flush');
+          await this.mesh.publishTelemetry(wakePayload);
+
+          // B. Publish any offline events that were held while sleeping (e.g. sleep event if not sent live)
+          for (const ev of heldEvents) {
+            if (ev.type === 'state_transition' || ev.event === 'pre_freeze_snapshot') {
+              await this.mesh.publishTelemetry({
+                ...ev,
+                v: 1,
+                deviceName: this.deviceId.name
+              });
+            }
+          }
+
+          // C. Sanitize held events to prevent recursive payload bloating
+          const sanitizedHeld = heldEvents
+            .filter((e) => e.type !== 'recovery_journal_flush')
+            .map((e) => ({
+              id: e.id,
+              ts: e.ts,
+              type: e.type,
+              note: e.note || e.title || ''
+            }));
+
+          const recoveryPayload = {
+            note: `Wake Recovery Audit: Reconnected after ${Math.round(observedIntervalMs / 1000)}s (${recoveryResult.waitOutcome}, ${recoveryResult.reconnectWaitElapsedMs}ms)`,
+            v: 1,
+            appVersion: APP_VERSION,
+            kernelVersion: KERNEL_VERSION,
+            type: 'recovery_journal_flush',
+            deviceName: this.deviceId.name,
+            flushState: 'settled',
+            summary: `Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Flushed ${heldEvents.length} held events.`,
+            recovery: {
+              observedIntervalMs,
+              passiveAudit: recoveryResult.passiveAudit,
+              reconnectWaitElapsedMs: recoveryResult.reconnectWaitElapsedMs,
+              waitOutcome: recoveryResult.waitOutcome,
+              settledBridgeConnected: recoveryResult.settledBridgeConnected,
+              peersBeforeSleep: prePeers,
+              peersAfterWake: currentPeers,
+              peersLostCount: recoveryResult.peersLostCount,
+              trigger: resumeDetail.trigger
+            },
+            heldOfflineEventsCount: sanitizedHeld.length,
+            heldOfflineEvents: sanitizedHeld,
+            ts: Date.now()
+          };
+
+          this.onTelemetryEvent('recovery', recoveryPayload);
+
+          const ok = await this.mesh.publishTelemetry(recoveryPayload);
+          if (ok) {
+            await ackOfflineOutbox(heldIds);
+            appendLocalEvent({
+              category: 'recovery',
+              title: `Wake Recovery Flushed (${Math.round(observedIntervalMs / 1000)}s sleep)`,
+              detail: `Flushed ${heldIds.length} events · ${recoveryResult.waitOutcome} (${recoveryResult.reconnectWaitElapsedMs}ms)`,
+              deviceName: this.deviceId.name,
+              payload: recoveryPayload
+            });
+            console.log(`[axona.track] Successfully published recovery flush and acked ${heldIds.length} held events.`);
+            return true;
+          } else {
+            console.warn('[axona.track] Recovery flush publish unconfirmed; retaining in outbox for bridge reconnect retry.');
+            return false;
+          }
+        });
+      };
+
+      // Try immediate flush if already connected
+      let flushed = false;
+      if (this.mesh.isConnected) {
+        const res = await doFlush();
+        flushed = !!(res && res.result);
+      }
+
+      // If mobile radio is still re-associating, arm bridge reconnect listener and retry timers
+      if (!flushed) {
+        console.log('[axona.track] Waiting for mobile radio / bridge reconnect to flush wake events…');
+        const unbindBridge = this.mesh.onBridgeOpen(async () => {
+          unbindBridge();
+          await doFlush();
+        });
+
+        // Additional safety retry intervals for mobile browsers
+        setTimeout(async () => {
+          if (this.mesh.isConnected && getOfflineOutbox().length > 0) {
+            await doFlush();
+          }
+        }, 3500);
+
+        setTimeout(async () => {
+          if (this.mesh.isConnected && getOfflineOutbox().length > 0) {
+            await doFlush();
+          }
+        }, 7000);
       }
     } catch (err) {
       console.error('[axona.track] Error during resume and flush:', err);

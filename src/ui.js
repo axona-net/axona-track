@@ -17,10 +17,16 @@ export class TrackUI {
     this.currentFilter = 'all';
     this.stateStartTime = Date.now();
     this.lastState = lifecycle.state;
+    this.visibleEventCount = 30;
+    this._renderDebounceTimer = null;
+    this._eventsMap = new Map();
+    this._lastMetricsFetch = 0;
+    this._cachedMetrics = null;
+    this._batteryPromise = null;
 
     this._mountLayout();
     this._bindEvents();
-    this._renderEventList();
+    this._renderEventList(true);
     this._startUIRefreshLoop();
   }
 
@@ -440,7 +446,7 @@ export class TrackUI {
     document.getElementById('btnClearLog')?.addEventListener('click', () => {
       if (confirm('Clear all local telemetry events?')) {
         clearLocalEvents();
-        this._renderEventList();
+        this._renderEventList(true);
         this.showToast('Local event log cleared');
       }
     });
@@ -452,8 +458,36 @@ export class TrackUI {
         tabs.forEach((t) => t.classList.remove('active'));
         e.target.classList.add('active');
         this.currentFilter = e.target.getAttribute('data-filter');
-        this._renderEventList();
+        this.visibleEventCount = 30;
+        this._renderEventList(true);
       });
+    });
+
+    // Delegated click handler on #eventList for "Show More" and lazy JSON expansion
+    const eventList = document.getElementById('eventList');
+    eventList?.addEventListener('click', (e) => {
+      const showMoreBtn = e.target.closest('#btnShowMoreEvents');
+      if (showMoreBtn) {
+        this.visibleEventCount += 20;
+        this._renderEventList(true);
+        return;
+      }
+
+      const item = e.target.closest('.event-item');
+      if (!item) return;
+
+      const id = item.getAttribute('data-id');
+      const jsonEl = document.getElementById(`json-${id}`);
+      if (jsonEl) {
+        const isExpanded = jsonEl.classList.contains('expanded');
+        if (!isExpanded && !jsonEl.textContent) {
+          const ev = this._eventsMap.get(id);
+          if (ev) {
+            jsonEl.textContent = JSON.stringify(ev.payload || {}, null, 2);
+          }
+        }
+        jsonEl.classList.toggle('expanded');
+      }
     });
 
     // Mobile QR Modal Handlers
@@ -638,10 +672,10 @@ export class TrackUI {
       });
     }
 
-    // Cross-tab synchronization: re-render event list when another window writes to storage
+    // Cross-tab synchronization: debounced re-render when another window writes to storage
     window.addEventListener('storage', (e) => {
       if (e.key === 'axona.track.events_log') {
-        this._renderEventList();
+        this._scheduleRenderEventList();
       }
     });
   }
@@ -755,7 +789,14 @@ export class TrackUI {
     const peerCount = this.mesh.getPeerCount();
     const webrtcPeers = this.mesh.peers.size;
     const medianRtt = this.mesh.getMedianRtt();
-    const metrics = getSessionMetrics();
+
+    // Cache metrics reads from localStorage (max once per 2.5s) to avoid synchronous JSON.parse churn
+    const now = Date.now();
+    if (!this._cachedMetrics || (now - this._lastMetricsFetch > 2500)) {
+      this._cachedMetrics = getSessionMetrics();
+      this._lastMetricsFetch = now;
+    }
+    const metrics = this._cachedMetrics;
     const roles = this.mesh.getRoleCounts();
 
     const peerVal = document.getElementById('peerCountVal');
@@ -803,15 +844,40 @@ export class TrackUI {
     const profBat = document.getElementById('profBat');
     if (profBat && typeof navigator.getBattery === 'function') {
       try {
-        const b = await navigator.getBattery();
-        profBat.textContent = `${Math.round(b.level * 100)}% ${b.charging ? '⚡ (Charging)' : ''}`;
+        if (!this._batteryPromise) {
+          this._batteryPromise = navigator.getBattery().catch(() => null);
+        }
+        const b = await this._batteryPromise;
+        if (b) {
+          profBat.textContent = `${Math.round(b.level * 100)}% ${b.charging ? '⚡ (Charging)' : ''}`;
+        } else {
+          profBat.textContent = 'Unavailable';
+        }
       } catch {
         profBat.textContent = 'Unavailable';
       }
     }
   }
 
-  _renderEventList() {
+  _scheduleRenderEventList() {
+    if (this._renderDebounceTimer) return;
+    this._renderDebounceTimer = setTimeout(() => {
+      this._renderDebounceTimer = null;
+      this._renderEventList(true);
+    }, 250);
+  }
+
+  _renderEventList(force = false) {
+    if (!force) {
+      this._scheduleRenderEventList();
+      return;
+    }
+
+    if (this._renderDebounceTimer) {
+      clearTimeout(this._renderDebounceTimer);
+      this._renderDebounceTimer = null;
+    }
+
     const list = document.getElementById('eventList');
     if (!list) return;
 
@@ -822,10 +888,21 @@ export class TrackUI {
 
     if (filtered.length === 0) {
       list.innerHTML = `<div style="text-align: center; color: var(--text-dim); padding: 30px; font-size: 0.85rem;">No ${this.currentFilter} events recorded yet.</div>`;
+      this._eventsMap.clear();
       return;
     }
 
-    list.innerHTML = filtered.map((ev) => {
+    // Cap visible items to prevent unbounded DOM node accumulation (memory leak protection)
+    const displayed = filtered.slice(0, this.visibleEventCount);
+    const hasMore = filtered.length > this.visibleEventCount;
+
+    // Cache visible event references for lazy JSON expansion without re-stringifying all 500 items
+    this._eventsMap.clear();
+    for (const ev of displayed) {
+      this._eventsMap.set(String(ev.id), ev);
+    }
+
+    let html = displayed.map((ev) => {
       const timeStr = new Date(ev.ts).toLocaleTimeString();
       let badgeClass = 'cyan';
       if (ev.category === 'churn') badgeClass = 'amber';
@@ -849,21 +926,22 @@ export class TrackUI {
             <span class="event-time">${timeStr}</span>
           </div>
           <div class="event-detail">${this._escape(ev.detail || '')}</div>
-          <pre class="event-raw-json" id="json-${ev.id}">${this._escape(JSON.stringify(ev.payload || {}, null, 2))}</pre>
+          <pre class="event-raw-json" id="json-${ev.id}"></pre>
         </div>
       `;
     }).join('');
 
-    // Bind click to toggle JSON expansion
-    list.querySelectorAll('.event-item').forEach((item) => {
-      item.addEventListener('click', () => {
-        const id = item.getAttribute('data-id');
-        const jsonEl = document.getElementById(`json-${id}`);
-        if (jsonEl) {
-          jsonEl.classList.toggle('expanded');
-        }
-      });
-    });
+    if (hasMore) {
+      html += `
+        <div class="timeline-footer" style="text-align: center; padding: 12px 0;">
+          <button class="btn btn-sm" id="btnShowMoreEvents" style="font-size: 0.75rem; padding: 6px 14px;">
+            Show More (+20) · ${filtered.length - this.visibleEventCount} remaining
+          </button>
+        </div>
+      `;
+    }
+
+    list.innerHTML = html;
   }
 
   _escape(str) {
@@ -875,10 +953,15 @@ export class TrackUI {
   }
 
   _startUIRefreshLoop() {
-    // Fast loop for metrics and network updates
+    // Fast loop for lightweight in-memory mesh metrics
     setInterval(() => {
       this.updateMeshMetrics();
-      this.updateEnvironmentUI();
     }, 2000);
+
+    // Relaxed loop for hardware/battery IPC polling (30 seconds)
+    this.updateEnvironmentUI();
+    setInterval(() => {
+      this.updateEnvironmentUI();
+    }, 30000);
   }
 }
