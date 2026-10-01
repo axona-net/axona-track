@@ -1,6 +1,6 @@
 // src/telemetry.js — Telemetry orchestrator for state transitions, offline event holding, and recovery flush
 
-import { detectPlatform, getLiveEnvironmentStats } from './id.js';
+import { detectPlatform, getLiveEnvironmentStats, getDeviceTypeDesc } from './id.js';
 import { 
   appendLocalEvent, 
   updateSessionMetrics, 
@@ -123,8 +123,9 @@ export class TelemetryService {
         suspensionsCount: (m.suspensionsCount || 0) + 1
       }));
 
+      const dev = getDeviceTypeDesc();
       const eventRecord = {
-        note: `📴 Phone sleeping: ${this.deviceId.name} (suspended with ${snapshot.peerCount} peers, trigger: ${freezeDetail.trigger})`,
+        note: `${dev.sleepIcon} ${dev.noun} sleeping: ${this.deviceId.name} (suspended with ${snapshot.peerCount} peers, trigger: ${freezeDetail.trigger})`,
         type: 'state_transition',
         event: 'pre_freeze_snapshot',
         trigger: freezeDetail.trigger,
@@ -132,12 +133,13 @@ export class TelemetryService {
         peersHeld: snapshot.peerCount,
         rolesHeld: snapshot.roles.length,
         deviceName: this.deviceId.name,
+        deviceType: dev.noun,
         ts: Date.now()
       };
 
       appendLocalEvent({
         category: 'lifecycle',
-        title: `📴 Phone sleeping`,
+        title: `${dev.sleepIcon} ${dev.noun} sleeping`,
         detail: `Suspended with ${snapshot.peerCount} peers (${freezeDetail.trigger})`,
         deviceName: this.deviceId.name,
         payload: eventRecord
@@ -347,14 +349,16 @@ export class TelemetryService {
           const heldIds = heldEvents.map((e) => e.id);
 
           // A. Publish human-readable wake announcement to #axona-track
+          const dev = getDeviceTypeDesc();
           const wakePayload = {
-            note: `📱 Phone woke up: ${this.deviceId.name} (resumed after ${Math.round(observedIntervalMs / 1000)}s sleep, restored ${currentPeers} peers)`,
+            note: `${dev.wakeIcon} ${dev.noun} woke up: ${this.deviceId.name} (resumed after ${Math.round(observedIntervalMs / 1000)}s sleep, restored ${currentPeers} peers)`,
             v: 1,
             appVersion: APP_VERSION,
             kernelVersion: KERNEL_VERSION,
             type: 'lifecycle_transition',
             event: 'wake_resume',
             deviceName: this.deviceId.name,
+            deviceType: dev.noun,
             sleepIntervalMs: observedIntervalMs,
             peersBeforeSleep: prePeers,
             peersAfterWake: currentPeers,
@@ -363,7 +367,7 @@ export class TelemetryService {
 
           appendLocalEvent({
             category: 'lifecycle',
-            title: `📱 Phone woke up`,
+            title: `${dev.wakeIcon} ${dev.noun} woke up`,
             detail: `Resumed after ${Math.round(observedIntervalMs / 1000)}s sleep (${currentPeers} peers)`,
             deviceName: this.deviceId.name,
             payload: wakePayload

@@ -71,6 +71,36 @@ export function detectPlatform() {
 }
 
 /**
+ * Accurately describe device type and suitable status icons
+ */
+export function getDeviceTypeDesc(platform) {
+  const p = platform || detectPlatform();
+  const ua = p.userAgent || (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
+  if (p.os === 'iOS') {
+    if (/iPad/.test(ua) || (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && p.touchSupported)) {
+      return { noun: 'iPad', wakeIcon: '📱', sleepIcon: '📴' };
+    }
+    return { noun: 'Phone', wakeIcon: '📱', sleepIcon: '📴' };
+  }
+  if (p.os === 'Android') {
+    if (/Mobile/.test(ua)) {
+      return { noun: 'Phone', wakeIcon: '📱', sleepIcon: '📴' };
+    }
+    return { noun: 'Tablet', wakeIcon: '📱', sleepIcon: '📴' };
+  }
+  if (p.os === 'macOS') {
+    return { noun: 'Mac', wakeIcon: '💻', sleepIcon: '💤' };
+  }
+  if (p.os === 'Windows') {
+    return { noun: 'PC', wakeIcon: '💻', sleepIcon: '💤' };
+  }
+  if (p.os === 'Linux') {
+    return { noun: 'Linux PC', wakeIcon: '💻', sleepIcon: '💤' };
+  }
+  return { noun: 'Device', wakeIcon: '💻', sleepIcon: '💤' };
+}
+
+/**
  * Get or create persistent human-friendly device name (UUID removed per David / Council)
  */
 export function getOrCreateDeviceName() {
