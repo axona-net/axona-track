@@ -108,6 +108,8 @@ async function initApp() {
     }
   });
 
+  ui.updater = updater;
+
   // Connect Mesh
   await mesh.start();
   ui.updateMeshMetrics();

@@ -43,7 +43,7 @@ export class TrackUI {
                 </svg>
               </div>
               <h1 class="brand-title">axona.track</h1>
-              <span class="brand-version" id="versionBadge">v${APP_VERSION} · kernel v${KERNEL_VERSION}</span>
+              <span class="brand-version pill-clickable" id="versionBadge" title="Tap to check for application updates">v${APP_VERSION} · kernel v${KERNEL_VERSION}</span>
             </div>
 
             <div class="header-badges">
@@ -59,6 +59,10 @@ export class TrackUI {
               <div class="pill pill-device pill-clickable" id="copyDevicePill" title="Click to copy device name">
                 <span class="status-dot connected"></span>
                 <span id="deviceNameLabel">${this.deviceId.name}</span>
+              </div>
+              <div class="pill pill-browser" id="browserPill" title="Detected Browser & Operating System">
+                <span class="status-dot connected"></span>
+                <span>🌐 ${this.platform.browser} (${this.platform.os})</span>
               </div>
               <div class="pill pill-pwa">
                 <span>${this.platform.isStandalone ? '📱 Standalone PWA' : '🌐 Browser Tab'}</span>
@@ -379,6 +383,19 @@ export class TrackUI {
         });
       } else {
         this.showToast(`Device: ${name}`);
+      }
+    });
+
+    // Check for updates on version badge tap
+    document.getElementById('versionBadge')?.addEventListener('click', async () => {
+      this.showToast('Checking for application updates…');
+      if (this.updater && typeof this.updater.checkNow === 'function') {
+        const hasUpdate = await this.updater.checkNow();
+        if (!hasUpdate) {
+          setTimeout(() => this.showToast(`Up to date: v${APP_VERSION}`), 600);
+        }
+      } else {
+        setTimeout(() => this.showToast(`Running v${APP_VERSION}`), 400);
       }
     });
 
@@ -910,9 +927,11 @@ export class TrackUI {
       else if (ev.category === 'lifecycle') badgeClass = 'violet';
 
       const evDevice = ev.deviceName || ev.payload?.deviceName;
+      const evBrowser = ev.browser || ev.payload?.browser || ev.payload?.platform?.browser;
       const isCurrentDevice = !evDevice || evDevice === this.deviceId.name;
+      const localLabel = evBrowser ? `Local (${evBrowser})` : `Local (${this.platform.browser})`;
       const deviceTag = evDevice
-        ? `<span class="badge-tag ${isCurrentDevice ? 'emerald' : 'cyan'}" style="font-size: 0.68rem;" title="${this._escape(evDevice)}">${isCurrentDevice ? 'Device local' : this._escape(evDevice)}</span>`
+        ? `<span class="badge-tag ${isCurrentDevice ? 'emerald' : 'cyan'}" style="font-size: 0.68rem;" title="${this._escape(evDevice)}">${isCurrentDevice ? localLabel : this._escape(evDevice)}</span>`
         : '';
 
       return `

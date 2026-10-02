@@ -97,12 +97,21 @@ export class AdaptationLab {
           name: this.mesh.testTopic || `axona-track/duty-${attemptId}`
         };
 
+        const platform = detectPlatform();
         const payload = {
           note: `[Lab Test 1] Role Relinquish Intent: backup duty handoff`,
           type: 'role_relinquish_intent',
           attemptId,
           role: 'backup',
           deviceName: this.telemetry?.deviceId?.name || 'anonymous',
+          os: platform.os,
+          browser: platform.browser,
+          platform: {
+            os: platform.os,
+            browser: platform.browser,
+            isStandalone: platform.isStandalone,
+            displayMode: platform.displayMode
+          },
           ts: startedAt
         };
 
@@ -563,8 +572,12 @@ export class AdaptationLab {
       // Publish wire telemetry to #axona-track
       if (this.mesh && typeof this.mesh.publishTelemetry === 'function' && record.status === 'completed') {
         try {
+          const platform = detectPlatform();
           await this.mesh.publishTelemetry({
             note: `Dynamic Mesh Scale Test: peak ${record.peakPeers} peers · max lag ${record.maxEventLoopLagMs}ms`,
+            v: 1,
+            appVersion: APP_VERSION,
+            kernelVersion: KERNEL_VERSION,
             type: 'mesh_scale_stress_test',
             attemptId,
             mode: this.mode,
@@ -579,6 +592,14 @@ export class AdaptationLab {
             batteryEnd: record.batteryEnd,
             batteryDelta: record.batteryDelta,
             deviceName: this.telemetry?.deviceId?.name || 'anonymous',
+            os: platform.os,
+            browser: platform.browser,
+            platform: {
+              os: platform.os,
+              browser: platform.browser,
+              isStandalone: platform.isStandalone,
+              displayMode: platform.displayMode
+            },
             ts: startedAt
           });
         } catch (e) {

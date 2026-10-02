@@ -139,6 +139,29 @@ body {
   border-radius: var(--radius-full);
   border: 1px solid rgba(56, 189, 248, 0.25);
   font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.brand-version.pill-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.brand-version.pill-clickable:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+.brand-version.pill-clickable:active {
+  transform: scale(0.97);
+}
+
+.pill-browser {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.09);
+  border-color: rgba(56, 189, 248, 0.28);
+  font-weight: 600;
 }
 
 .header-badges {

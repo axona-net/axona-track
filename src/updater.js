@@ -182,6 +182,23 @@ export function initPWAUpdater({ onNotice, onApplying } = {}) {
   return {
     applyNow() {
       applyUpdate();
+    },
+    async checkNow() {
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg) {
+            await reg.update();
+            if (reg.waiting) {
+              scheduleApply();
+              return true;
+            }
+          }
+        } catch (e) {
+          console.warn('[axona.track] Manual update check error:', e);
+        }
+      }
+      return false;
     }
   };
 }
