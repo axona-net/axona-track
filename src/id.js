@@ -32,17 +32,19 @@ export function detectPlatform() {
   }
 
   // Browser detection
+  // Note: iOS browsers (Chrome/CriOS, Firefox/FxiOS, Edge/EdgiOS, Opera/OPT) all include "Safari" in their UA string.
+  // We MUST check Edge, Opera, Firefox, and Chrome BEFORE Safari to avoid misclassifying other browsers on iOS as Safari.
   let browser = 'Unknown Browser';
-  if (/CriOS|Chrome/.test(ua) && !/Edge|Edg|OPR/.test(ua)) {
-    browser = 'Chrome';
-  } else if (/Safari/.test(ua) && !/Chrome|CriOS/.test(ua)) {
-    browser = 'Safari';
-  } else if (/Firefox|FxiOS/.test(ua)) {
-    browser = 'Firefox';
-  } else if (/Edg|Edge/.test(ua)) {
+  if (/Edg|Edge|EdgiOS|EdgA/i.test(ua)) {
     browser = 'Edge';
-  } else if (/OPR|Opera/.test(ua)) {
+  } else if (/OPR|Opera|OPT/i.test(ua)) {
     browser = 'Opera';
+  } else if (/Firefox|FxiOS/i.test(ua)) {
+    browser = 'Firefox';
+  } else if (/CriOS|Chrome|CrMo/i.test(ua)) {
+    browser = 'Chrome';
+  } else if (/Safari/i.test(ua)) {
+    browser = 'Safari';
   }
 
   // Standalone PWA detection
@@ -71,37 +73,63 @@ export function detectPlatform() {
 }
 
 /**
- * Accurately describe device type and suitable status icons
+ * Accurately describe device type and suitable status icons, incorporating browser & OS
  */
 export function getDeviceTypeDesc(platform) {
   const p = platform || detectPlatform();
   const ua = p.userAgent || (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
+  let noun = 'Device';
+  let wakeIcon = '💻';
+  let sleepIcon = '💤';
+
   if (p.os === 'iOS') {
+    wakeIcon = '📱';
+    sleepIcon = '📴';
     if (/iPad/.test(ua) || (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && p.touchSupported)) {
-      return { noun: 'iPad', wakeIcon: '📱', sleepIcon: '📴' };
+      noun = 'iPad';
+    } else {
+      noun = 'Phone';
     }
-    return { noun: 'Phone', wakeIcon: '📱', sleepIcon: '📴' };
-  }
-  if (p.os === 'Android') {
+  } else if (p.os === 'Android') {
+    wakeIcon = '📱';
+    sleepIcon = '📴';
     if (/Mobile/.test(ua)) {
-      return { noun: 'Phone', wakeIcon: '📱', sleepIcon: '📴' };
+      noun = 'Phone';
+    } else {
+      noun = 'Tablet';
     }
-    return { noun: 'Tablet', wakeIcon: '📱', sleepIcon: '📴' };
+  } else if (p.os === 'macOS') {
+    noun = 'Mac';
+    wakeIcon = '💻';
+    sleepIcon = '💤';
+  } else if (p.os === 'Windows') {
+    noun = 'PC';
+    wakeIcon = '💻';
+    sleepIcon = '💤';
+  } else if (p.os === 'Linux') {
+    noun = 'Linux PC';
+    wakeIcon = '💻';
+    sleepIcon = '💤';
   }
-  if (p.os === 'macOS') {
-    return { noun: 'Mac', wakeIcon: '💻', sleepIcon: '💤' };
+
+  const browserLabel = p.browser && p.browser !== 'Unknown Browser' ? p.browser : '';
+  const osLabel = p.os && p.os !== 'Unknown OS' ? p.os : '';
+  let descriptor = noun;
+  if (osLabel && browserLabel) {
+    descriptor = `${noun} (${osLabel} ${browserLabel})`;
+  } else if (browserLabel) {
+    descriptor = `${noun} (${browserLabel})`;
+  } else if (osLabel) {
+    descriptor = `${noun} (${osLabel})`;
   }
-  if (p.os === 'Windows') {
-    return { noun: 'PC', wakeIcon: '💻', sleepIcon: '💤' };
-  }
-  if (p.os === 'Linux') {
-    return { noun: 'Linux PC', wakeIcon: '💻', sleepIcon: '💤' };
-  }
-  return { noun: 'Device', wakeIcon: '💻', sleepIcon: '💤' };
+
+  return { noun, descriptor, wakeIcon, sleepIcon, os: p.os, browser: p.browser };
 }
 
 /**
- * Get or create persistent human-friendly device name (UUID removed per David / Council)
+ * Get or create persistent human-friendly device name incorporating browser identity
+ * Format: adj-animal-os-browser-mode-rand (6 parts)
+ * Migrates legacy 5-part names (adj-animal-os-mode-rand) seamlessly.
  */
 export function getOrCreateDeviceName() {
   // Clear any legacy UUID from storage
@@ -109,20 +137,43 @@ export function getOrCreateDeviceName() {
     localStorage.removeItem('axona.track.device_uuid');
   } catch {}
 
+  const platform = detectPlatform();
+  const osShort = platform.os.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const browserShort = platform.browser.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const modeShort = platform.isStandalone ? 'pwa' : 'tab';
+
   let name = null;
   try {
     name = localStorage.getItem('axona.track.device_name');
   } catch {}
 
+  if (name) {
+    const parts = name.split('-');
+    // Migration 1: If legacy 5-part name (adj-animal-os-mode-rand), inject browserShort at index 3
+    if (parts.length === 5) {
+      parts.splice(3, 0, browserShort);
+      name = parts.join('-');
+      try {
+        localStorage.setItem('axona.track.device_name', name);
+      } catch {}
+    } else if (parts.length === 6) {
+      // If browser changed or was previously misclassified, update browser slot
+      if (parts[3] !== browserShort && browserShort !== 'unknownbrowser') {
+        parts[3] = browserShort;
+        name = parts.join('-');
+        try {
+          localStorage.setItem('axona.track.device_name', name);
+        } catch {}
+      }
+    }
+  }
+
   if (!name) {
-    const platform = detectPlatform();
     const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
     const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
-    const osShort = platform.os.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const modeShort = platform.isStandalone ? 'pwa' : 'tab';
     const rand = Math.random().toString(36).slice(2, 6);
 
-    name = `${adj}-${animal}-${osShort}-${modeShort}-${rand}`;
+    name = `${adj}-${animal}-${osShort}-${browserShort}-${modeShort}-${rand}`;
     try {
       localStorage.setItem('axona.track.device_name', name);
     } catch {}

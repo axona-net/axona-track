@@ -56,6 +56,8 @@ export class TelemetryService {
       type: 'heartbeat_anchor',
       trigger,
       deviceName: this.deviceId.name,
+      os: platform.os,
+      browser: platform.browser,
       platform: {
         os: platform.os,
         browser: platform.browser,
@@ -123,9 +125,10 @@ export class TelemetryService {
         suspensionsCount: (m.suspensionsCount || 0) + 1
       }));
 
-      const dev = getDeviceTypeDesc();
+      const platform = detectPlatform();
+      const dev = getDeviceTypeDesc(platform);
       const eventRecord = {
-        note: `${dev.sleepIcon} ${dev.noun} sleeping: ${this.deviceId.name} (suspended with ${snapshot.peerCount} peers, trigger: ${freezeDetail.trigger})`,
+        note: `${dev.sleepIcon} ${dev.descriptor} sleeping: ${this.deviceId.name} (suspended with ${snapshot.peerCount} peers, trigger: ${freezeDetail.trigger})`,
         type: 'state_transition',
         event: 'pre_freeze_snapshot',
         trigger: freezeDetail.trigger,
@@ -134,12 +137,21 @@ export class TelemetryService {
         rolesHeld: snapshot.roles.length,
         deviceName: this.deviceId.name,
         deviceType: dev.noun,
+        descriptor: dev.descriptor,
+        os: dev.os,
+        browser: dev.browser,
+        platform: {
+          os: dev.os,
+          browser: dev.browser,
+          displayMode: platform.displayMode,
+          isStandalone: platform.isStandalone
+        },
         ts: Date.now()
       };
 
       appendLocalEvent({
         category: 'lifecycle',
-        title: `${dev.sleepIcon} ${dev.noun} sleeping`,
+        title: `${dev.sleepIcon} ${dev.descriptor} sleeping`,
         detail: `Suspended with ${snapshot.peerCount} peers (${freezeDetail.trigger})`,
         deviceName: this.deviceId.name,
         payload: eventRecord
@@ -175,6 +187,7 @@ export class TelemetryService {
         peersAdded: (m.peersAdded || 0) + 1
       }));
 
+      const platform = detectPlatform();
       const payload = {
         note: `Peer Connected: ${peer.id.slice(0, 8)}… via ${peer.candidateType || 'webrtc'} (total ${this.mesh.getPeerCount()} peers)`,
         v: 1,
@@ -182,6 +195,14 @@ export class TelemetryService {
         kernelVersion: KERNEL_VERSION,
         type: 'peer_connected',
         deviceName: this.deviceId.name,
+        os: platform.os,
+        browser: platform.browser,
+        platform: {
+          os: platform.os,
+          browser: platform.browser,
+          isStandalone: platform.isStandalone,
+          displayMode: platform.displayMode
+        },
         peerNodeId: peer.id,
         transportKind: 'webrtc',
         candidateType: peer.candidateType,
@@ -218,6 +239,7 @@ export class TelemetryService {
         peersLost: (m.peersLost || 0) + 1
       }));
 
+      const platform = detectPlatform();
       const payload = {
         note: `Peer Dropped: ${loss.id.slice(0, 8)}… after ${Math.round(loss.durationMs / 1000)}s (${loss.reason})`,
         v: 1,
@@ -225,6 +247,14 @@ export class TelemetryService {
         kernelVersion: KERNEL_VERSION,
         type: 'peer_disconnected',
         deviceName: this.deviceId.name,
+        os: platform.os,
+        browser: platform.browser,
+        platform: {
+          os: platform.os,
+          browser: platform.browser,
+          isStandalone: platform.isStandalone,
+          displayMode: platform.displayMode
+        },
         peerNodeId: loss.id,
         transportKind: 'webrtc',
         durationMs: loss.durationMs,
@@ -254,6 +284,7 @@ export class TelemetryService {
   }
 
   _handleConnectivityWarning(warnDetail) {
+    const platform = detectPlatform();
     const payload = {
       note: `Connectivity Warning: ${warnDetail.reason} (${this.mesh.getPeerCount()} peers, state ${this.lifecycle.state})`,
       v: 1,
@@ -261,6 +292,14 @@ export class TelemetryService {
       kernelVersion: KERNEL_VERSION,
       type: 'connectivity_warning',
       deviceName: this.deviceId.name,
+      os: platform.os,
+      browser: platform.browser,
+      platform: {
+        os: platform.os,
+        browser: platform.browser,
+        isStandalone: platform.isStandalone,
+        displayMode: platform.displayMode
+      },
       reason: warnDetail.reason,
       details: warnDetail,
       lifecycleState: this.lifecycle.state.toLowerCase(),
@@ -285,6 +324,7 @@ export class TelemetryService {
   }
 
   async _handleLifecycleTransition(newState, oldState, detail) {
+    const platform = detectPlatform();
     const roles = Array.from(this.mesh.activeRoles.keys());
     const payload = {
       note: `State Transition: ${oldState} ➔ ${newState}${detail?.reason ? ` (${detail.reason})` : ''}`,
@@ -293,6 +333,14 @@ export class TelemetryService {
       kernelVersion: KERNEL_VERSION,
       type: 'lifecycle_transition',
       deviceName: this.deviceId.name,
+      os: platform.os,
+      browser: platform.browser,
+      platform: {
+        os: platform.os,
+        browser: platform.browser,
+        isStandalone: platform.isStandalone,
+        displayMode: platform.displayMode
+      },
       previousState: oldState.toLowerCase(),
       newState: newState.toLowerCase(),
       reason: detail?.reason || detail?.trigger || 'transition',
@@ -349,9 +397,10 @@ export class TelemetryService {
           const heldIds = heldEvents.map((e) => e.id);
 
           // A. Publish human-readable wake announcement to #axona-track
-          const dev = getDeviceTypeDesc();
+          const platform = detectPlatform();
+          const dev = getDeviceTypeDesc(platform);
           const wakePayload = {
-            note: `${dev.wakeIcon} ${dev.noun} woke up: ${this.deviceId.name} (resumed after ${Math.round(observedIntervalMs / 1000)}s sleep, restored ${currentPeers} peers)`,
+            note: `${dev.wakeIcon} ${dev.descriptor} woke up: ${this.deviceId.name} (resumed after ${Math.round(observedIntervalMs / 1000)}s sleep, restored ${currentPeers} peers)`,
             v: 1,
             appVersion: APP_VERSION,
             kernelVersion: KERNEL_VERSION,
@@ -359,6 +408,15 @@ export class TelemetryService {
             event: 'wake_resume',
             deviceName: this.deviceId.name,
             deviceType: dev.noun,
+            descriptor: dev.descriptor,
+            os: dev.os,
+            browser: dev.browser,
+            platform: {
+              os: dev.os,
+              browser: dev.browser,
+              displayMode: platform.displayMode,
+              isStandalone: platform.isStandalone
+            },
             sleepIntervalMs: observedIntervalMs,
             peersBeforeSleep: prePeers,
             peersAfterWake: currentPeers,
@@ -367,7 +425,7 @@ export class TelemetryService {
 
           appendLocalEvent({
             category: 'lifecycle',
-            title: `${dev.wakeIcon} ${dev.noun} woke up`,
+            title: `${dev.wakeIcon} ${dev.descriptor} woke up`,
             detail: `Resumed after ${Math.round(observedIntervalMs / 1000)}s sleep (${currentPeers} peers)`,
             deviceName: this.deviceId.name,
             payload: wakePayload
@@ -381,7 +439,15 @@ export class TelemetryService {
               await this.mesh.publishTelemetry({
                 ...ev,
                 v: 1,
-                deviceName: this.deviceId.name
+                deviceName: this.deviceId.name,
+                os: dev.os,
+                browser: dev.browser,
+                platform: {
+                  os: dev.os,
+                  browser: dev.browser,
+                  displayMode: platform.displayMode,
+                  isStandalone: platform.isStandalone
+                }
               });
             }
           }
@@ -403,6 +469,14 @@ export class TelemetryService {
             kernelVersion: KERNEL_VERSION,
             type: 'recovery_journal_flush',
             deviceName: this.deviceId.name,
+            os: dev.os,
+            browser: dev.browser,
+            platform: {
+              os: dev.os,
+              browser: dev.browser,
+              displayMode: platform.displayMode,
+              isStandalone: platform.isStandalone
+            },
             flushState: 'settled',
             summary: `Tab restored after ${Math.round(observedIntervalMs / 1000)}s interval. Flushed ${heldEvents.length} held events.`,
             recovery: {
