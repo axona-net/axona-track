@@ -1,6 +1,6 @@
 {
   "name": "axona-track",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Mobile PWA Network Behavior & Role Telemetry App for Axona",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "test": "node test/storage_transaction.test.mjs && node test/adaptation_lab.test.mjs"
   },
   "dependencies": {
-    "@axona/protocol": "github:axona-net/axona-protocol#v4.99.0",
+    "@axona/protocol": "github:axona-net/axona-protocol#v4.100.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
