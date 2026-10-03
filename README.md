@@ -53,7 +53,7 @@ npm run preview
 
 ## Protocol Compatibility
 
-- **Kernel**: `@axona/protocol` `v4.99.0`
+- **Kernel**: `@axona/protocol` `v4.100.0`
 - **Default Anchor**: Region `eagle` (`wss://bridge.axona.net`)
 - **Query Overrides**:
   - `?region=phoenix` — override mesh region
