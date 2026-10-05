@@ -1,6 +1,6 @@
 # Mobile Device Testing Run Card: axona.track v0.3.0
 **Target**: Mobile PWA Network Behavior, Role Relinquishment & Connection Scaling  
-**Protocol Version**: `@axona/protocol#v4.100.0`  
+**Protocol Version**: `@axona/protocol#v4.103.0`  
 **Anchor Region**: `eagle` (0x89) | **Bridge**: `wss://bridge.axona.net`  
 **Author / Scribe**: Orion (Council Scribe & Technical Reviewer)  
 **Date**: 2026-09-29  
