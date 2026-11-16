@@ -1,6 +1,7 @@
 {
   "name": "axona-track",
   "version": "0.3.9",
+  "license": "Apache-2.0",
   "description": "Mobile PWA Network Behavior & Role Telemetry App for Axona",
   "private": true,
   "type": "module",

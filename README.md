@@ -64,4 +64,4 @@ npm run preview
 
 ## License
 
-MIT © Axona Network
+Copyright 2026 Axona.net. Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Provided "as is", without warranty of any kind.
